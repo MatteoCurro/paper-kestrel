@@ -58,7 +58,7 @@ def model(name: str, fallback: str, max_tokens: int = 12000) -> LLM:
     )
 
 
-CORE = lambda: model("MODEL_CORE", "openai/gpt-6-sol")
+CORE = lambda: model("MODEL_CORE", "openai/gpt-6.1-sol")
 LIGHT = lambda: model("MODEL_LIGHT", "openai/gpt-6-luna", 8000)
 
 
