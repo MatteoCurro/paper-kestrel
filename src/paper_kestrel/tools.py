@@ -157,7 +157,7 @@ class GitDiffTool(BaseTool):
 
     def _run(self, max_chars: int = 30000) -> str:
         subprocess.run(
-            ["git", "add", "-N", "--", "."],
+            ["git", "add", "-N", "--", ".", ":(exclude)node_modules/**"],
             cwd=_safe_root(),
             text=True,
             stdout=subprocess.PIPE,
@@ -166,7 +166,7 @@ class GitDiffTool(BaseTool):
             check=False,
         )
         proc = subprocess.run(
-            ["git", "diff", "--", "."],
+            ["git", "diff", "--", ".", ":(exclude)node_modules/**"],
             cwd=_safe_root(),
             text=True,
             stdout=subprocess.PIPE,
