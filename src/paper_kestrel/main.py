@@ -168,7 +168,8 @@ def run_check(name: str, work: Path) -> tuple[int, str]:
     if name == "full_test":
         cmd = ["npm", "test"]
     elif name == "diff_check":
-        cmd = ["git", "diff", "--check"]
+        _mark_untracked_for_diff(work)
+        cmd = ["git", "diff", "--check", "--", ".", ":(exclude)node_modules/**"]
     elif name == "python_compile":
         cmd = ["python3", "-m", "py_compile", "server/build_transit_data.py", "scripts/build_topocivici.py"]
     elif name == "account_focus":
@@ -184,7 +185,7 @@ def run_check(name: str, work: Path) -> tuple[int, str]:
 
 def _mark_untracked_for_diff(work: Path) -> None:
     subprocess.run(
-        ["git", "add", "-N", "--", "."],
+        ["git", "add", "-N", "--", ".", ":(exclude)node_modules/**"],
         cwd=work,
         text=True,
         stdout=subprocess.PIPE,
