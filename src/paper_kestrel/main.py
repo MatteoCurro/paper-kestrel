@@ -50,11 +50,13 @@ class ReviewDecision(BaseModel):
 
 
 def model(name: str, fallback: str, max_tokens: int = 12000) -> LLM:
+    effort = "medium" if name == "MODEL_CORE" else "low"
     return LLM(
         model=os.environ.get(name, fallback),
         temperature=0.1,
         timeout=300,
         max_completion_tokens=max_tokens,
+        reasoning_effort=effort,
     )
 
 
