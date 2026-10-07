@@ -1,64 +1,174 @@
-# Jarvis v1 — M1 repair and auth alignment
+# Jarvis v1 — complete M1 implementation from current baseline
 
 Status: approved.
 Master plan: MASTERPLAN-JARVIS.md
 
-Continue the failed Jarvis M1 implementation and resolve only the concrete blockers from run 37676262065.
+Implement Jarvis M1 completely from the current split-repository baseline. Do not depend on files from previous failed runs or external artifacts. Create every required Jarvis source/test file that is absent.
 
-## Mandatory auth decision
+## Product goal
 
-The hosted Supabase project's email template emits a numeric OTP via {{ .Token }}.
+A private, mobile-first, read-only Agent Control Room for observing paper-kestrel runs in near real time.
 
-Jarvis must use:
+## Canonical backend contract
+
+Supabase tables:
+- public.agent_runs
+- public.agent_events
+
+Browser access is authenticated and RLS-authorized. Realtime is supplemental; initial REST reads must work independently.
+
+## Authentication — mandatory
+
+The hosted Supabase project's email template sends a numeric OTP.
+
+Implement:
 1. email entry;
 2. supabase.auth.signInWithOtp({ email, options: { shouldCreateUser: false } });
-3. explicit OTP code entry;
+3. explicit numeric code entry;
 4. supabase.auth.verifyOtp({ email, token, type: 'email' });
-5. authenticated RLS-backed dashboard.
+5. authenticated dashboard after a valid session.
 
-Do NOT change the global Supabase email template.
-Do NOT use a magic-link-only UX.
-Do NOT make GitHub OAuth the primary operational path in this milestone.
-GitHub OAuth is deferred until it can be safely linked to the existing authorized identity without creating a second account.
+Do not change Supabase email templates.
+Do not create users automatically.
+Do not use magic-link-only UX.
+Do not make GitHub OAuth operational in M1.
+Document that GitHub OAuth is deferred until it can be safely linked to the already-authorized identity.
 
-## Existing review blockers to fix
+## Required source files
 
-1. Responsive contract test
-- tests/jarvis.cjs currently rejects legitimate responsive CSS because its regex matches max-width declarations and media-query breakpoints.
-- Rewrite the assertion so it detects genuinely fixed/minimum desktop-only element widths without rejecting max-width or media queries.
-- Preserve meaningful overflow protection.
-- Rerun the focused Jarvis test.
+Presentation repository:
+- jarvis.html
+- assets/jarvis.css
+- js/app/jarvis/config.js
+- js/app/jarvis/integration.js
+- js/app/jarvis/ui.js
+- js/app/jarvis/main.js
 
-2. Initial data must not depend on Realtime
-- js/app/jarvis/integration.js currently loads initial runs only after a realtime SUBSCRIBED callback.
-- Authenticated initial REST reads of agent_runs/agent_events must happen independently of realtime readiness.
-- If Realtime fails but REST works, the dashboard must still show current/history data and mark realtime as disconnected/stale.
-- Retry must retry data reads as well as the channel.
-- Add deterministic tests for channel never subscribing / CHANNEL_ERROR while REST data remains available.
+Test repository:
+- tests/jarvis.cjs
 
-3. Finish operational UI
-- ensure jarvis.html + assets/jarvis.css + js/app/jarvis/* all exist and initialize;
-- OTP code flow works with shouldCreateUser:false;
-- current run, owner interaction, agents, timeline, history, PR links, token/cost data and safe errors render correctly;
-- no hidden chain-of-thought or sensitive payloads;
-- read-only only.
+Reuse the existing vendored Supabase browser SDK/config pattern where practical. Never embed a service-role or secret key.
+
+## Current run UI
+
+Show:
+- GitHub run number + attempt;
+- overall status;
+- current phase;
+- elapsed duration;
+- total tokens including reasoning/cached where present;
+- authoritative estimated USD cost;
+- PR links;
+- prominent `SERVE MATTEO` / `NON SERVE MATTEO`;
+- interaction reason when present.
+
+## Agent grid
+
+Show the known agents and derive state only from data:
+- Delivery Director
+- Solution Architect
+- Senior Frontend Engineer
+- Frontend Quality and Accessibility Engineer
+- Senior Backend and Integration Engineer
+- Senior Data and Transit Platform Engineer
+- Product Manager and Growth Strategist
+- Senior UI/UX and Visual Design Reviewer
+- QA, Security and Release Reviewer
+- Controller
+
+At minimum distinguish active vs idle. Do not invent activity.
+
+## Live timeline
+
+Show concise safe fields only:
+- timestamp;
+- agent;
+- event type/status when useful;
+- message;
+- handoff_to.
+
+Never render hidden reasoning, full prompts, raw metadata dumps, credentials or sensitive payloads.
+
+## History
+
+- list recent runs;
+- allow selecting an older run;
+- load its events;
+- preserve run status/cost/completion visibility.
+
+## Realtime resilience
+
+Critical:
+- initial authenticated REST reads of agent_runs/agent_events MUST run immediately after session bootstrap and MUST NOT wait for a SUBSCRIBED realtime callback;
+- if Realtime never subscribes or returns CHANNEL_ERROR/TIMED_OUT/CLOSED, available REST data must still render;
+- show realtime as disconnected/stale;
+- retry must retry both REST data reads and the realtime channel;
+- Realtime inserts should update the visible timeline without full-page reload when possible.
+
+## Responsive/accessibility
+
+- usable at 320px viewport width;
+- no page-level horizontal overflow;
+- interactive touch targets >=44px;
+- explicit labels for email and OTP;
+- autocomplete="email" and autocomplete="one-time-code";
+- visible keyboard focus;
+- aria-live/status for loading/errors/connection changes;
+- long IDs/messages/links wrap;
+- respects reduced motion;
+- iOS Safari compatible.
+
+## Deterministic tests
+
+tests/jarvis.cjs must verify all of the following without false positives:
+
+1. Security
+- no service-role/secret key in browser files;
+- no mutation/write methods to telemetry tables;
+- safe display-field allowlist or equivalent rendering contract.
+
+2. OTP
+- signInWithOtp uses shouldCreateUser:false;
+- verifyOtp uses email + token + type:'email';
+- invalid/expired OTP produces a safe user-facing error.
+
+3. Data/realtime
+- canonical agent_runs and agent_events are used;
+- initial REST reads happen without waiting for SUBSCRIBED;
+- REST data still renders if channel never subscribes;
+- CHANNEL_ERROR/TIMED_OUT/CLOSED produces stale/disconnected state but does not erase available data;
+- retry retries REST + realtime;
+- realtime event insert updates data path.
+
+4. UI
+- SERVE MATTEO and NON SERVE MATTEO states exist;
+- current run, agent grid, timeline, history, cost/tokens and PR links exist;
+- loading/empty/error states exist.
+
+5. Responsive contract
+- viewport meta exists;
+- no obvious fixed/min-width desktop-only page/container rule that causes overflow at 320px;
+- IMPORTANT: the test must NOT reject legitimate max-width declarations or @media(max-width:...) breakpoints merely because they contain pixel values;
+- include positive and negative CSS fixtures proving this distinction.
+
+6. Boundaries
+- no production/deploy workflow modifications.
 
 ## Verification
 
 Run:
-- focused Jarvis tests;
-- full suite through controller baseline policy;
+- node tests/jarvis.cjs;
+- full_test through controller baseline policy;
 - account_focus;
-- git diff --check.
+- diff_check.
 
-Document any external Auth/RLS limitation without changing Supabase configuration.
+The reviewer must inspect the actual responsive-test evidence and the actual OTP/realtime deterministic tests before approval.
 
-## Delivery boundaries
+## Delivery
 
 - PR only.
 - No merge.
 - No production deploy.
 - No DNS changes.
-- No Supabase schema migration.
-- No email-template modification.
-- No credential or secret changes.
+- No Supabase schema/config/email-template changes.
+- No secret changes.
