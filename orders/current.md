@@ -1,8 +1,8 @@
-# Jarvis telemetry smoke
+# Jarvis telemetry smoke v2
 
 Status: approved.
 
-Purpose: validate the automatic push trigger and Jarvis realtime telemetry only.
+Purpose: validate the canonical Agent Control Room telemetry path after schema consolidation.
 
 Execution requirements:
 - do not modify any repository file;
@@ -17,7 +17,7 @@ Execution requirements:
 
 Success criteria:
 - the workflow starts automatically from this committed order;
-- Jarvis receives run, agent, validation and completion events;
+- Jarvis records the full lifecycle in agent_runs and agent_events;
+- long checks expose started and completed events;
+- run status ends as success/done;
 - no target repository is modified.
-
-Telemetry verification iteration: 2.
