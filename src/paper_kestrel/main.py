@@ -22,6 +22,8 @@ DeveloperRole = Literal[
     "solution_architect",
 ]
 
+CheckName = Literal["full_test", "diff_check", "python_compile", "account_focus"]
+
 
 class WorkItem(BaseModel):
     id: str
@@ -39,7 +41,7 @@ class DispatchPlan(BaseModel):
     use_product_growth: bool = False
     use_ui_ux: bool = False
     work_items: list[WorkItem]
-    mandatory_checks: list[str] = Field(default_factory=lambda: ["full_test", "diff_check"])
+    mandatory_checks: list[CheckName] = Field(default_factory=lambda: ["full_test", "diff_check"])
 
 
 class ReviewDecision(BaseModel):
@@ -180,9 +182,50 @@ def run_check(name: str, work: Path) -> tuple[int, str]:
         return 124, "TIMEOUT"
 
 
+def _mark_untracked_for_diff(work: Path) -> None:
+    subprocess.run(
+        ["git", "add", "-N", "--", "."],
+        cwd=work,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=60,
+        check=False,
+    )
+
+
 def git_diff(work: Path, limit: int = 50000) -> str:
+    _mark_untracked_for_diff(work)
     p = subprocess.run(["git", "diff", "--", "."], cwd=work, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
     return p.stdout[:limit] + ("\n...TRUNCATED..." if len(p.stdout) > limit else "")
+
+
+def changed_js_tests(work: Path) -> list[str]:
+    _mark_untracked_for_diff(work)
+    p = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=ACMRTUXB", "--", "tests/*.cjs"],
+        cwd=work,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=60,
+    )
+    return sorted({line.strip() for line in p.stdout.splitlines() if line.strip().startswith("tests/") and line.strip().endswith(".cjs")})
+
+
+def run_changed_js_test(path: str, work: Path) -> tuple[int, str]:
+    try:
+        p = subprocess.run(
+            ["node", path],
+            cwd=work,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=300,
+        )
+        return p.returncode, p.stdout[-12000:]
+    except subprocess.TimeoutExpired:
+        return 124, "TIMEOUT"
 
 
 def execute_work_item(item: WorkItem, spec: str, advice: str) -> str:
@@ -244,7 +287,10 @@ Rules:
 - Request product/growth review only when conversion, onboarding, analytics, consent or commercial behavior is materially involved.
 - Request UI/UX review when information architecture, screen layout, interaction flow or visual hierarchy changes.
 - Never plan production deployment, DNS changes or secret handling.
-- Every work item must have observable acceptance criteria.""",
+- Every work item must have observable acceptance criteria.
+- mandatory_checks may contain ONLY these exact identifiers: full_test, diff_check, python_compile, account_focus.
+- Do not put prose, PR/delivery steps, file paths, or shell commands in mandatory_checks.
+- Use full_test and diff_check for normal work; add python_compile or account_focus only when materially relevant.""",
         "A structured dispatch plan with ordered work items and mandatory checks.",
         DispatchPlan,
     )
@@ -301,7 +347,8 @@ Rules:
             completed.append(item.id)
 
     max_repairs = int(os.environ.get("MAX_REPAIR_ROUNDS", "2"))
-    checks = list(dict.fromkeys(plan.mandatory_checks + ["full_test", "diff_check"]))
+    allowed_checks: set[str] = {"full_test", "diff_check", "python_compile", "account_focus"}
+    checks = [check for check in dict.fromkeys([*plan.mandatory_checks, "full_test", "diff_check"]) if check in allowed_checks]
     final_review = None
     final_checks: dict[str, dict] = {}
 
@@ -310,6 +357,9 @@ Rules:
         for check in checks:
             rc, out = run_check(check, work)
             final_checks[check] = {"returncode": rc, "output": out[-12000:]}
+        for test_path in changed_js_tests(work):
+            rc, out = run_changed_js_test(test_path, work)
+            final_checks[f"changed_js_test:{test_path}"] = {"returncode": rc, "output": out[-12000:]}
         diff = git_diff(work)
 
         reviewer = agent_for("qa_release", writable=False)
@@ -329,7 +379,8 @@ CHECK RESULTS:
 CURRENT DIFF:
 {diff}
 
-Approve only if the implementation is coherent, tests are acceptable, no unrelated behavior was changed, and privacy/security/deployment boundaries are preserved.
+Approve only if the implementation is coherent, tests are acceptable, the diff matches the requested scope, no unrelated behavior was changed, and privacy/security/deployment boundaries are preserved.
+The pull request is intentionally opened by the controller only AFTER your approval. Do not require a PR to exist yet and do not block approval because delivery has not happened.
 If blocking issues exist, list them concretely and choose the specialist role best suited to repair them.""",
             "A structured release decision.",
             ReviewDecision,
