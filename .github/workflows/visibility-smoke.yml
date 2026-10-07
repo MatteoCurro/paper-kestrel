@@ -1,0 +1,18 @@
+name: Workflow visibility smoke
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/visibility-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  visible:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "workflow registration ok"
