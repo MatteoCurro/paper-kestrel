@@ -21,3 +21,5 @@ Success criteria:
 - long checks expose started and completed events;
 - run status ends as success/done;
 - no target repository is modified.
+
+Telemetry verification iteration: 3.
