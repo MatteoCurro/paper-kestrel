@@ -91,6 +91,7 @@ class JarvisEmitter:
             "reasoning_tokens": 0,
         }
         self.total_cost = 0.0
+        self.has_usage = False
 
     def set_spec(self, spec_path: str) -> None:
         self.spec_path = spec_path
@@ -159,6 +160,8 @@ class JarvisEmitter:
         self.sequence += 1
         usage_data = _usage_dict(usage)
         cost = estimate_cost(model, usage_data)
+        if any(usage_data.values()):
+            self.has_usage = True
         for key in self.totals:
             self.totals[key] += usage_data.get(key, 0)
         self.total_cost += cost
@@ -167,14 +170,19 @@ class JarvisEmitter:
             "spec_path": self.spec_path or None,
             "status": status if event_type.startswith("run.") or finished else "running",
             "phase": phase or "implementation",
-            "need_owner": bool(need_owner) if need_owner is not None else False,
-            "started_at": self.started_at,
-            "prompt_tokens": self.totals["prompt_tokens"],
-            "cached_prompt_tokens": self.totals["cached_prompt_tokens"],
-            "completion_tokens": self.totals["completion_tokens"],
-            "reasoning_tokens": self.totals["reasoning_tokens"],
-            "estimated_cost_usd": round(self.total_cost, 6),
         }
+        if event_type == "run.started":
+            run["started_at"] = self.started_at
+        if need_owner is not None:
+            run["need_owner"] = bool(need_owner)
+        if self.has_usage:
+            run.update({
+                "prompt_tokens": self.totals["prompt_tokens"],
+                "cached_prompt_tokens": self.totals["cached_prompt_tokens"],
+                "completion_tokens": self.totals["completion_tokens"],
+                "reasoning_tokens": self.totals["reasoning_tokens"],
+                "estimated_cost_usd": round(self.total_cost, 6),
+            })
         if summary is not None:
             run["summary"] = _brief(summary, 800)
         if pr_url is not None:
