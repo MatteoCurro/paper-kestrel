@@ -56,6 +56,12 @@ Canonical telemetry storage for the first production version:
 - realtime run/event storage verified.
 - token/cost telemetry verified.
 
+## Auth decision — 2026-10-07
+
+The hosted Supabase project's email auth template currently emits a numeric OTP through `{{ .Token }}`. Jarvis M1 must therefore use the existing passwordless **email → code → verifyOtp** flow, with `shouldCreateUser:false`, so it reuses the already-authorized account and does not alter U.Venice registration behavior.
+
+GitHub OAuth is deferred until the GitHub provider is configured inside project Auth and can be safely linked to the existing authorized identity without creating a second account. Do not change the global email template solely for Jarvis.
+
 ## M1 — Source-controlled Jarvis UI [IN PROGRESS]
 
 Create the first maintainable UI in the split repositories rather than keeping the dashboard only as an inline Edge Function string.
