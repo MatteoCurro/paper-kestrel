@@ -33,6 +33,41 @@ B_FILES = {"package.json", "package-lock.json"}
 SKIP_NAMES = {".git", ".github", "README.md", "NOTICE.md"}
 
 
+
+RUNTIME_SEO_WORKFLOW = """name: Ephemeral SEO validation fixture
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/deploy-seo-production.yml
+  workflow_dispatch:
+env:
+  REMOTE_PATH: /lamp0/web/vhosts/unlockvenice.com/htdocs
+# Unexpected SEO deploy files
+# trasporti/(?:luoghi|percorsi)
+# en/trasporti/(?:places|routes)
+# fr/trasporti/(?:lieux|itineraires)
+# de/trasporti/(?:orte|routen)
+# No ready SEO landing pages: refusing production deploy
+# <meta name="robots" content="index,follow">
+# sitemap-transport-places.xml
+# sitemap-transport-routes.xml
+"""
+
+RUNTIME_APP_WORKFLOW = """name: Ephemeral app validation fixture
+env:
+  REMOTE_PATH: /lamp0/web/vhosts/unlockvenice.com/htdocs/trasporti
+"""
+
+
+def install_runtime_test_fixtures(work: Path) -> None:
+    """Create non-exported files required by legacy contract tests."""
+    workflows = work / ".github" / "workflows"
+    workflows.mkdir(parents=True, exist_ok=True)
+    (workflows / "deploy-seo-production.yml").write_text(RUNTIME_SEO_WORKFLOW, encoding="utf-8")
+    (workflows / "deploy-production.yml").write_text(RUNTIME_APP_WORKFLOW, encoding="utf-8")
+
 def owner(rel: str) -> str | None:
     rel = rel.replace("\\", "/").lstrip("./")
     if rel in A_FILES or any(rel.startswith(p) for p in A_DIRS):
@@ -85,6 +120,7 @@ def assemble(repo_a: Path, repo_b: Path, work: Path) -> None:
     work.mkdir(parents=True)
     overlay(repo_a, work)
     overlay(repo_b, work)
+    install_runtime_test_fixtures(work)
 
 
 def clean_owned(target: Path, side: str) -> None:
