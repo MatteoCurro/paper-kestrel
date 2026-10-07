@@ -153,6 +153,16 @@ def _jarvis_phase(role: str) -> str:
     return "implementation"
 
 
+def _role_title(role: str) -> str:
+    return {
+        "frontend_lead": "Senior Frontend Engineer",
+        "frontend_quality": "Frontend Quality and Accessibility Engineer",
+        "backend_lead": "Senior Backend and Integration Engineer",
+        "data_platform": "Senior Data and Transit Platform Engineer",
+        "solution_architect": "Solution Architect",
+    }.get(role, role)
+
+
 def run_single(agent: Agent, description: str, expected: str, output_pydantic=None):
     task = Task(
         description=description,
@@ -472,7 +482,7 @@ Rules:
     for item in plan.work_items:
         EMITTER.emit(
             "handoff",
-            f"Director → {item.role}: {item.objective}",
+            f"Director → {_role_title(item.role)}: {item.objective}",
             agent="Delivery Director",
             status="done",
             phase="implementation",
@@ -484,6 +494,14 @@ Rules:
         try:
             summary = execute_work_item(item, spec, advice)
             event_log.append({"stage": "implementation", "item": item.id, "role": item.role, "summary": summary[-6000:]})
+            EMITTER.emit(
+                "agent.report",
+                summary[-640:],
+                agent=_role_title(item.role),
+                status="done",
+                phase="implementation",
+                details={"work_item": item.id},
+            )
             completed.append(item.id)
         except Exception as exc:
             event_log.append({"stage": "blocked", "item": item.id, "role": item.role, "error": str(exc)})
@@ -507,6 +525,14 @@ Rules:
     for round_no in range(max_repairs + 1):
         final_checks = {}
         for check in checks:
+            EMITTER.emit(
+                "check.started",
+                f"{check}: controllo in corso",
+                agent="Controller",
+                status="checking",
+                phase="testing",
+                details={"check": check},
+            )
             rc, out = run_check(check, work)
             final_checks[check] = {"returncode": rc, "output": out[-12000:]}
             EMITTER.emit(
@@ -518,6 +544,14 @@ Rules:
                 details={"check": check, "returncode": rc},
             )
         for test_path in changed_js_tests(work):
+            EMITTER.emit(
+                "check.started",
+                f"{test_path}: test mirato in corso",
+                agent="Controller",
+                status="checking",
+                phase="testing",
+                details={"check": "changed_js_test", "path": test_path},
+            )
             rc, out = run_changed_js_test(test_path, work)
             final_checks[f"changed_js_test:{test_path}"] = {"returncode": rc, "output": out[-12000:]}
             EMITTER.emit(
@@ -576,7 +610,7 @@ If blocking issues exist, list them concretely and choose the specialist role be
         )
         EMITTER.emit(
             "handoff",
-            f"QA → {final_review.repair_role}: repair #{round_no + 1}",
+            f"QA → {_role_title(final_review.repair_role)}: repair #{round_no + 1}",
             agent="QA, Security and Release Reviewer",
             status="done",
             phase="qa",
