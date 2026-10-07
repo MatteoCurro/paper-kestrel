@@ -13,6 +13,7 @@ from crewai import Agent, Crew, LLM, Process, Task
 from pydantic import BaseModel, Field
 
 from .tools import developer_tools, reviewer_tools
+from .jarvis import EMITTER
 
 
 DeveloperRole = Literal[
@@ -142,6 +143,16 @@ def agent_for(role: str, writable: bool = False) -> Agent:
     )
 
 
+def _jarvis_phase(role: str) -> str:
+    if role == "Delivery Director":
+        return "planning"
+    if role in {"Solution Architect", "Senior UI/UX and Visual Design Reviewer", "Product Manager and Growth Strategist"}:
+        return "architecture"
+    if role == "QA, Security and Release Reviewer":
+        return "qa"
+    return "implementation"
+
+
 def run_single(agent: Agent, description: str, expected: str, output_pydantic=None):
     task = Task(
         description=description,
@@ -156,7 +167,37 @@ def run_single(agent: Agent, description: str, expected: str, output_pydantic=No
         verbose=False,
         max_rpm=int(os.environ.get("MAX_RPM", "30")),
     )
-    result = crew.kickoff()
+    phase = _jarvis_phase(agent.role)
+    model_name = getattr(agent.llm, "model", None)
+    EMITTER.emit(
+        "agent.started",
+        f"{agent.role}: attività avviata",
+        agent=agent.role,
+        status="working",
+        phase=phase,
+        model=model_name,
+    )
+    try:
+        result = crew.kickoff()
+    except Exception as exc:
+        EMITTER.emit(
+            "agent.failed",
+            f"{agent.role}: errore {type(exc).__name__}",
+            agent=agent.role,
+            status="failed",
+            phase=phase,
+            model=model_name,
+        )
+        raise
+    EMITTER.emit(
+        "agent.completed",
+        f"{agent.role}: attività completata",
+        agent=agent.role,
+        status="done",
+        phase=phase,
+        model=model_name,
+        usage=getattr(result, "token_usage", None),
+    )
     if output_pydantic is not None:
         parsed = task.output.pydantic
         if parsed is None:
@@ -348,6 +389,14 @@ def cli() -> None:
     os.environ["AGENT_WORKSPACE"] = str(work)
     spec_path = Path(args.spec).resolve()
     spec = spec_path.read_text(encoding="utf-8")
+    EMITTER.set_spec(args.spec)
+    EMITTER.emit(
+        "run.started",
+        f"Run avviato per {args.spec}",
+        status="running",
+        phase="setup",
+        event_key="run:started",
+    )
     if len(spec) > 80000:
         raise SystemExit("Specification is too large; split it into a focused delivery order.")
 
@@ -382,6 +431,15 @@ Rules:
     )
     plan.work_items = plan.work_items[:6]
     event_log.append({"stage": "plan", "data": plan.model_dump()})
+    EMITTER.emit(
+        "plan.created",
+        f"Piano creato: {len(plan.work_items)} work item · rischio {plan.risk}",
+        agent="Delivery Director",
+        status="done",
+        phase="planning",
+        summary=plan.summary,
+        details={"work_items": len(plan.work_items), "risk": plan.risk},
+    )
 
     advice_parts: list[str] = []
     if plan.use_solution_architect:
@@ -412,6 +470,14 @@ Rules:
 
     completed: list[str] = []
     for item in plan.work_items:
+        EMITTER.emit(
+            "handoff",
+            f"Director → {item.role}: {item.objective}",
+            agent="Delivery Director",
+            status="done",
+            phase="implementation",
+            details={"work_item": item.id, "to": item.role},
+        )
         missing = [d for d in item.depends_on if d not in completed]
         if missing:
             raise RuntimeError(f"Invalid plan: {item.id} depends on unfinished {missing}")
@@ -443,9 +509,25 @@ Rules:
         for check in checks:
             rc, out = run_check(check, work)
             final_checks[check] = {"returncode": rc, "output": out[-12000:]}
+            EMITTER.emit(
+                "check.completed",
+                f"{check}: {'ok' if rc == 0 else 'fallito'}",
+                agent="Controller",
+                status="success" if rc == 0 else "failed",
+                phase="testing",
+                details={"check": check, "returncode": rc},
+            )
         for test_path in changed_js_tests(work):
             rc, out = run_changed_js_test(test_path, work)
             final_checks[f"changed_js_test:{test_path}"] = {"returncode": rc, "output": out[-12000:]}
+            EMITTER.emit(
+                "check.completed",
+                f"{test_path}: {'ok' if rc == 0 else 'fallito'}",
+                agent="Controller",
+                status="success" if rc == 0 else "failed",
+                phase="testing",
+                details={"check": "changed_js_test", "path": test_path, "returncode": rc},
+            )
         diff = git_diff(work)
 
         reviewer = agent_for("qa_release", writable=False)
@@ -474,6 +556,14 @@ If blocking issues exist, list them concretely and choose the specialist role be
             ReviewDecision,
         )
         event_log.append({"stage": "review", "round": round_no, "data": final_review.model_dump()})
+        EMITTER.emit(
+            "review.decision",
+            final_review.summary,
+            agent="QA, Security and Release Reviewer",
+            status="approved" if final_review.approved else "blocked",
+            phase="qa",
+            details={"round": round_no, "blocking_issues": len(final_review.blocking_issues)},
+        )
 
         checks_green = all(v["returncode"] == 0 for v in final_checks.values())
         if final_review.approved and checks_green:
@@ -483,6 +573,14 @@ If blocking issues exist, list them concretely and choose the specialist role be
 
         problems = "\n".join(final_review.blocking_issues) or "\n".join(
             f"{k}: returncode {v['returncode']}" for k, v in final_checks.items() if v["returncode"] != 0
+        )
+        EMITTER.emit(
+            "handoff",
+            f"QA → {final_review.repair_role}: repair #{round_no + 1}",
+            agent="QA, Security and Release Reviewer",
+            status="done",
+            phase="qa",
+            details={"repair_round": round_no + 1, "to": final_review.repair_role},
         )
         repair = WorkItem(
             id=f"repair-{round_no + 1}",
@@ -511,7 +609,26 @@ If blocking issues exist, list them concretely and choose the specialist role be
         + "\n",
         encoding="utf-8",
     )
-    if not success:
+    if success:
+        EMITTER.emit(
+            "run.ready",
+            "QA approvato: candidato pronto per apertura PR",
+            status="running",
+            phase="delivery",
+            summary=final_review.summary if final_review else "Review completata",
+            event_key="run:ready",
+        )
+    else:
+        EMITTER.emit(
+            "run.failed",
+            final_review.summary if final_review else "Run non approvato",
+            status="failure",
+            phase="qa",
+            need_owner=True,
+            summary=final_review.summary if final_review else "Run non approvato",
+            finished=True,
+            event_key="run:failed",
+        )
         raise SystemExit(2)
 
 
@@ -520,6 +637,16 @@ if __name__ == "__main__":
         cli()
     except SystemExit:
         raise
-    except Exception:
+    except Exception as exc:
+        EMITTER.emit(
+            "run.failed",
+            f"Errore orchestratore: {type(exc).__name__}",
+            status="failure",
+            phase="implementation",
+            need_owner=True,
+            summary=str(exc),
+            finished=True,
+            event_key="run:exception",
+        )
         traceback.print_exc()
         raise SystemExit(3)
