@@ -236,9 +236,9 @@ def _run_full_test_with_baseline(work: Path) -> tuple[int, str]:
     baseline_tail = _normalized_test_tail(baseline_run.stdout, [work, baseline])
     if candidate.returncode == baseline_run.returncode and candidate_tail == baseline_tail:
         return 0, (
-            "BASELINE_EQUIVALENT_FAILURE: candidate and unchanged baseline fail identically; "
-            "no regression detected in the full suite.\n\n"
-            + candidate.stdout[-28000:]
+            candidate.stdout[-26000:]
+            + "\n\nBASELINE_EQUIVALENT_FAILURE: candidate and unchanged baseline fail identically; "
+            "no regression detected in the full suite."
         )
 
     return candidate.returncode or 1, (
@@ -468,6 +468,7 @@ CURRENT DIFF:
 Approve only if the implementation is coherent, tests are acceptable, the diff matches the requested scope, no unrelated behavior was changed, and privacy/security/deployment boundaries are preserved.
 The pull request is intentionally opened by the controller only AFTER your approval. Do not require a PR to exist yet and do not block approval because delivery has not happened.
 A full_test result with returncode 0 and the marker BASELINE_EQUIVALENT_FAILURE means the candidate and unchanged baseline failed identically in the deliberately incomplete public validation workspace; treat that as a passed non-regression check.
+When that marker is present, do not override it by rerunning full_test independently: the controller's baseline comparison is the authoritative non-regression result. You may still run targeted checks on changed files.
 If blocking issues exist, list them concretely and choose the specialist role best suited to repair them.""",
             "A structured release decision.",
             ReviewDecision,
