@@ -75,6 +75,21 @@ env:
 """
 
 
+RUNTIME_REUSE_DOC = """# Ephemeral reuse-policy validation fixture
+
+Machine-readable source: `config/reuse-first.json`.
+
+## Mandatory future gate
+
+The policy records reviewed upstream candidates including:
+- MobilityData/gtfs-validator
+- MobilityData/gtfs-realtime-bindings
+- BlinkTagInc/node-gtfs
+
+This fixture exists only inside the assembled CI workspace and is never exported to either public source repository.
+"""
+
+
 def install_runtime_test_fixtures(work: Path) -> None:
     """Create non-exported files required by legacy contract tests."""
     workflows = work / ".github" / "workflows"
@@ -82,6 +97,7 @@ def install_runtime_test_fixtures(work: Path) -> None:
     (workflows / "deploy-seo-production.yml").write_text(RUNTIME_SEO_WORKFLOW, encoding="utf-8")
     (workflows / "deploy-production.yml").write_text(RUNTIME_APP_WORKFLOW, encoding="utf-8")
     (workflows / "deploy-wordpress-widget.yml").write_text(RUNTIME_WORDPRESS_WORKFLOW, encoding="utf-8")
+    (work / "OPEN-SOURCE-REUSE-DECISIONS.md").write_text(RUNTIME_REUSE_DOC, encoding="utf-8")
 
 def owner(rel: str) -> str | None:
     rel = rel.replace("\\", "/").lstrip("./")
