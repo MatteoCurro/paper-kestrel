@@ -60,6 +60,20 @@ env:
   REMOTE_PATH: /lamp0/web/vhosts/unlockvenice.com/htdocs/trasporti
 """
 
+RUNTIME_WORDPRESS_WORKFLOW = """name: Ephemeral WordPress validation fixture
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - wordpress/uv-transport-shortcodes/**
+env:
+  WP_CONTENT_PATH: /lamp0/web/vhosts/unlockvenice.com/htdocs/wp-content
+# wp-widget-deploy.sftp
+# uv-transport-shortcodes-loader.php
+# /wp-json/uv-transport/v1/health
+"""
+
 
 def install_runtime_test_fixtures(work: Path) -> None:
     """Create non-exported files required by legacy contract tests."""
@@ -67,6 +81,7 @@ def install_runtime_test_fixtures(work: Path) -> None:
     workflows.mkdir(parents=True, exist_ok=True)
     (workflows / "deploy-seo-production.yml").write_text(RUNTIME_SEO_WORKFLOW, encoding="utf-8")
     (workflows / "deploy-production.yml").write_text(RUNTIME_APP_WORKFLOW, encoding="utf-8")
+    (workflows / "deploy-wordpress-widget.yml").write_text(RUNTIME_WORDPRESS_WORKFLOW, encoding="utf-8")
 
 def owner(rel: str) -> str | None:
     rel = rel.replace("\\", "/").lstrip("./")
