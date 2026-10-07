@@ -24,7 +24,7 @@ jobs:
       GH_TOKEN: ${{ secrets.CREW_GITHUB_TOKEN }}
       TARGET_REPO_A: ${{ secrets.TARGET_REPO_A }}
       TARGET_REPO_B: ${{ secrets.TARGET_REPO_B }}
-      MODEL_CORE: ${{ vars.MODEL_CORE || 'openai/gpt-6-sol' }}
+      MODEL_CORE: ${{ vars.MODEL_CORE || 'openai/gpt-6.1-sol' }}
       MODEL_LIGHT: ${{ vars.MODEL_LIGHT || 'openai/gpt-6-luna' }}
       MAX_REPAIR_ROUNDS: "2"
       MAX_RPM: "30"
