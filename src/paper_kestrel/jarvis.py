@@ -166,46 +166,59 @@ class JarvisEmitter:
             self.totals[key] += usage_data.get(key, 0)
         self.total_cost += cost
 
-        run: dict[str, Any] = {
+        normalized_event_type = event_type.replace(".", "_")
+        run_status = status if event_type.startswith("run.") or finished else "in_progress"
+        if run_status in {"running", "waiting"}:
+            run_status = "in_progress"
+        if run_status not in {"queued", "in_progress", "success", "failure", "cancelled"}:
+            run_status = "in_progress"
+
+        active = [agent] if status in {"working", "running", "reviewing", "checking"} else []
+        payload: dict[str, Any] = {
+            "github_run_id": int(self.run_id),
+            "run_attempt": int(self.attempt or "1"),
             "spec_path": self.spec_path or None,
-            "status": status if event_type.startswith("run.") or finished else "running",
+            "status": run_status,
             "phase": phase or "implementation",
+            "active_agents": active,
+            "event_key": event_key or f"{self.sequence:04d}:{normalized_event_type}",
+            "occurred_at": _now(),
+            "agent": agent,
+            "event_type": normalized_event_type,
+            "event_status": status,
+            "message": _brief(message),
+            "model": model,
+            "event_input_tokens": usage_data.get("prompt_tokens", 0),
+            "event_cached_tokens": usage_data.get("cached_prompt_tokens", 0),
+            "event_output_tokens": usage_data.get("completion_tokens", 0),
+            "event_reasoning_tokens": usage_data.get("reasoning_tokens", 0),
+            "event_estimated_cost_usd": round(cost, 6),
+            "metadata": details or {},
         }
         if event_type == "run.started":
-            run["started_at"] = self.started_at
+            payload["started_at"] = self.started_at
         if need_owner is not None:
-            run["need_owner"] = bool(need_owner)
+            payload["needs_interaction"] = bool(need_owner)
+            if need_owner:
+                payload["interaction_reason"] = _brief(summary or message, 800)
         if self.has_usage:
-            run.update({
-                "prompt_tokens": self.totals["prompt_tokens"],
-                "cached_prompt_tokens": self.totals["cached_prompt_tokens"],
-                "completion_tokens": self.totals["completion_tokens"],
+            payload.update({
+                "input_tokens": self.totals["prompt_tokens"],
+                "cached_tokens": self.totals["cached_prompt_tokens"],
+                "output_tokens": self.totals["completion_tokens"],
                 "reasoning_tokens": self.totals["reasoning_tokens"],
                 "estimated_cost_usd": round(self.total_cost, 6),
             })
         if summary is not None:
-            run["summary"] = _brief(summary, 800)
+            payload["summary"] = _brief(summary, 800)
         if pr_url is not None:
-            run["pr_url"] = pr_url
+            payload["pr_urls"] = [pr_url]
         if finished:
-            run["finished_at"] = _now()
+            payload["completed_at"] = _now()
+        if details and details.get("to"):
+            payload["handoff_to"] = str(details["to"])[:160]
 
-        event = {
-            "event_key": event_key or f"{self.sequence:04d}:{event_type}",
-            "event_at": _now(),
-            "agent": agent,
-            "event_type": event_type,
-            "status": status,
-            "message": _brief(message),
-            "model": model,
-            "prompt_tokens": usage_data.get("prompt_tokens", 0),
-            "cached_prompt_tokens": usage_data.get("cached_prompt_tokens", 0),
-            "completion_tokens": usage_data.get("completion_tokens", 0),
-            "reasoning_tokens": usage_data.get("reasoning_tokens", 0),
-            "estimated_cost_usd": round(cost, 6),
-            "details": details or {},
-        }
-        self._post({"run": run, "event": event})
+        self._post(payload)
 
 
 EMITTER = JarvisEmitter()
@@ -221,7 +234,7 @@ def main() -> None:
     parser.add_argument("--spec-path", default="")
     parser.add_argument("--pr-url", default="")
     parser.add_argument("--summary", default="")
-    parser.add_argument("--need-owner", action="store_true")
+    parser.add_argument("--need-owner", action="store_const", const=True, default=None)
     parser.add_argument("--finished", action="store_true")
     parser.add_argument("--event-key", default="")
     args = parser.parse_args()
