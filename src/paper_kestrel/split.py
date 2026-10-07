@@ -28,7 +28,7 @@ B_DIRS = (
     "data/",
     "go/",
 )
-A_FILES = {"index.html", "privacy.html"}
+A_FILES = {"index.html", "privacy.html", "jarvis.html"}
 B_FILES = {"package.json", "package-lock.json"}
 SKIP_NAMES = {".git", ".github", "README.md", "NOTICE.md"}
 
