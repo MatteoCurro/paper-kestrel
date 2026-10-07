@@ -156,6 +156,15 @@ class GitDiffTool(BaseTool):
     args_schema: type[BaseModel] = DiffInput
 
     def _run(self, max_chars: int = 30000) -> str:
+        subprocess.run(
+            ["git", "add", "-N", "--", "."],
+            cwd=_safe_root(),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=30,
+            check=False,
+        )
         proc = subprocess.run(
             ["git", "diff", "--", "."],
             cwd=_safe_root(),
