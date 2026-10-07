@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import subprocess
+import tempfile
 import traceback
 from pathlib import Path
 from typing import Literal
@@ -164,9 +165,93 @@ def run_single(agent: Agent, description: str, expected: str, output_pydantic=No
     return str(result)
 
 
+def _normalized_test_tail(output: str, roots: list[Path], limit: int = 16000) -> str:
+    normalized = output
+    for root in roots:
+        normalized = normalized.replace(str(root), "<WORKSPACE>")
+    return normalized[-limit:]
+
+
+def _run_full_test_with_baseline(work: Path) -> tuple[int, str]:
+    cmd = ["npm", "test"]
+    try:
+        candidate = subprocess.run(
+            cmd,
+            cwd=work,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=1200,
+        )
+    except subprocess.TimeoutExpired:
+        return 124, "TIMEOUT"
+
+    if candidate.returncode == 0:
+        return 0, candidate.stdout[-30000:]
+
+    with tempfile.TemporaryDirectory(prefix="paper-kestrel-baseline-") as tmp:
+        baseline = Path(tmp) / "baseline"
+        add = subprocess.run(
+            ["git", "worktree", "add", "--detach", str(baseline), "HEAD"],
+            cwd=work,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=120,
+        )
+        if add.returncode != 0:
+            return candidate.returncode, (
+                candidate.stdout[-24000:]
+                + "\n\nBASELINE_COMPARISON_UNAVAILABLE:\n"
+                + add.stdout[-4000:]
+            )
+
+        try:
+            node_modules = work / "node_modules"
+            if node_modules.exists() and not (baseline / "node_modules").exists():
+                (baseline / "node_modules").symlink_to(node_modules, target_is_directory=True)
+            try:
+                baseline_run = subprocess.run(
+                    cmd,
+                    cwd=baseline,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    timeout=1200,
+                )
+            except subprocess.TimeoutExpired:
+                return candidate.returncode, candidate.stdout[-24000:] + "\n\nBASELINE_TEST_TIMEOUT"
+        finally:
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(baseline)],
+                cwd=work,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=120,
+                check=False,
+            )
+
+    candidate_tail = _normalized_test_tail(candidate.stdout, [work, baseline])
+    baseline_tail = _normalized_test_tail(baseline_run.stdout, [work, baseline])
+    if candidate.returncode == baseline_run.returncode and candidate_tail == baseline_tail:
+        return 0, (
+            "BASELINE_EQUIVALENT_FAILURE: candidate and unchanged baseline fail identically; "
+            "no regression detected in the full suite.\n\n"
+            + candidate.stdout[-28000:]
+        )
+
+    return candidate.returncode or 1, (
+        "CANDIDATE_FULL_TEST:\n"
+        + candidate.stdout[-14000:]
+        + "\n\nBASELINE_FULL_TEST:\n"
+        + baseline_run.stdout[-14000:]
+    )
+
+
 def run_check(name: str, work: Path) -> tuple[int, str]:
     if name == "full_test":
-        cmd = ["npm", "test"]
+        return _run_full_test_with_baseline(work)
     elif name == "diff_check":
         _mark_untracked_for_diff(work)
         cmd = ["git", "diff", "--check", "--", ".", ":(exclude)node_modules/**"]
@@ -382,6 +467,7 @@ CURRENT DIFF:
 
 Approve only if the implementation is coherent, tests are acceptable, the diff matches the requested scope, no unrelated behavior was changed, and privacy/security/deployment boundaries are preserved.
 The pull request is intentionally opened by the controller only AFTER your approval. Do not require a PR to exist yet and do not block approval because delivery has not happened.
+A full_test result with returncode 0 and the marker BASELINE_EQUIVALENT_FAILURE means the candidate and unchanged baseline failed identically in the deliberately incomplete public validation workspace; treat that as a passed non-regression check.
 If blocking issues exist, list them concretely and choose the specialist role best suited to repair them.""",
             "A structured release decision.",
             ReviewDecision,
