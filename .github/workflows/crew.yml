@@ -1,3 +1,4 @@
+# Registered maintenance workflow
 name: Maintenance pass
 
 on:
