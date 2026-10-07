@@ -58,6 +58,13 @@ env:
 RUNTIME_APP_WORKFLOW = """name: Ephemeral app validation fixture
 env:
   REMOTE_PATH: /lamp0/web/vhosts/unlockvenice.com/htdocs/trasporti
+steps:
+  - run: cp -a api dist/
+"""
+
+RUNTIME_STAGING_WORKFLOW = """name: Ephemeral staging validation fixture
+steps:
+  - run: cp -a api dist/
 """
 
 RUNTIME_WORDPRESS_WORKFLOW = """name: Ephemeral WordPress validation fixture
@@ -96,6 +103,7 @@ def install_runtime_test_fixtures(work: Path) -> None:
     workflows.mkdir(parents=True, exist_ok=True)
     (workflows / "deploy-seo-production.yml").write_text(RUNTIME_SEO_WORKFLOW, encoding="utf-8")
     (workflows / "deploy-production.yml").write_text(RUNTIME_APP_WORKFLOW, encoding="utf-8")
+    (workflows / "deploy-staging.yml").write_text(RUNTIME_STAGING_WORKFLOW, encoding="utf-8")
     (workflows / "deploy-wordpress-widget.yml").write_text(RUNTIME_WORDPRESS_WORKFLOW, encoding="utf-8")
     (work / "OPEN-SOURCE-REUSE-DECISIONS.md").write_text(RUNTIME_REUSE_DOC, encoding="utf-8")
 
