@@ -73,6 +73,7 @@ jobs:
           git init -q
           git config user.name "paper-kestrel"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          printf "node_modules/\n" >> .git/info/exclude
           git add -A
           git commit -qm baseline
 
