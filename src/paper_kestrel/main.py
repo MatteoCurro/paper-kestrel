@@ -54,7 +54,7 @@ def model(name: str, fallback: str, max_tokens: int = 12000) -> LLM:
         model=os.environ.get(name, fallback),
         temperature=0.1,
         timeout=300,
-        max_tokens=max_tokens,
+        max_completion_tokens=max_tokens,
     )
 
 
