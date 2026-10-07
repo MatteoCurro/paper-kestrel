@@ -19,3 +19,5 @@ Success criteria:
 - the workflow starts automatically from this committed order;
 - Jarvis receives run, agent, validation and completion events;
 - no target repository is modified.
+
+Telemetry verification iteration: 2.
