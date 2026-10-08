@@ -20,6 +20,7 @@ from typing import Any
 from crewai import LLM
 
 from .budget import BudgetAdmissionError, CallBound, ModelRate, reserve_before_transport
+from .budget_gateway import reserve_remote
 from .state import RunStore
 
 
@@ -90,7 +91,7 @@ class BudgetedLLM(LLM):
             ceiling = min(Decimal("0.75"),
                           Decimal(os.environ.get("MAX_RUN_COST_USD", "0.75")),
                           Decimal(os.environ.get("HARD_RUN_COST_USD", "0.75")))
-            reserve_before_transport(
+            exposure = reserve_before_transport(
                 store,
                 bound=CallBound(
                     model=str(self.model),
@@ -103,6 +104,14 @@ class BudgetedLLM(LLM):
                 milestone=milestone,
                 run_cap=ceiling,
                 milestone_cap=Decimal("1.50"),
+            )
+            # Local state protects this run; the remote Postgres ledger is
+            # authoritative across *all* GitHub runners. Never call the model
+            # when remote admission fails, even if local admission succeeded.
+            reserve_remote(
+                reservation_id=reservation_id,
+                milestone=milestone,
+                amount_usd=exposure,
             )
         finally:
             store.db.close()
