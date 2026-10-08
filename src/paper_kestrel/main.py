@@ -29,6 +29,36 @@ DeveloperRole = Literal[
 CheckName = Literal["full_test", "diff_check", "python_compile", "account_focus"]
 Effort = Literal["tiny", "small", "medium", "large"]
 ReviewDisposition = Literal["approve", "approve_with_suggestions", "block"]
+MemoryScope = Literal[
+    "product_ux",
+    "engineering",
+    "transit_data",
+    "security_identity",
+    "infrastructure",
+    "growth_seo",
+]
+
+
+MEMORY_FILES: dict[str, str] = {
+    "product_ux": "PRODUCT-UX.md",
+    "engineering": "ENGINEERING.md",
+    "transit_data": "TRANSIT-DATA.md",
+    "security_identity": "SECURITY-IDENTITY.md",
+    "infrastructure": "INFRASTRUCTURE.md",
+    "growth_seo": "GROWTH-SEO.md",
+}
+
+ROLE_MEMORY_DEFAULTS: dict[str, list[str]] = {
+    "delivery_director": [],
+    "solution_architect": ["engineering", "infrastructure"],
+    "frontend_lead": ["engineering", "product_ux"],
+    "frontend_quality": ["engineering", "product_ux"],
+    "backend_lead": ["engineering", "security_identity"],
+    "data_platform": ["engineering", "transit_data"],
+    "product_growth": ["product_ux", "growth_seo"],
+    "ui_ux": ["product_ux"],
+    "qa_release": ["engineering"],
+}
 
 
 class WorkItem(BaseModel):
@@ -42,6 +72,7 @@ class WorkItem(BaseModel):
     max_iterations: int = Field(4, ge=2, le=7)
     budget_usd: float = Field(0.20, ge=0.03, le=0.60)
     optional: bool = False
+    memory_scopes: list[MemoryScope] = Field(default_factory=list)
 
 
 class DispatchPlan(BaseModel):
@@ -74,6 +105,7 @@ class RepairAssignment(BaseModel):
     effort: Effort = "small"
     max_iterations: int = Field(3, ge=2, le=5)
     budget_usd: float = Field(0.15, ge=0.03, le=0.40)
+    memory_scopes: list[MemoryScope] = Field(default_factory=list)
 
 
 class RepairPlan(BaseModel):
