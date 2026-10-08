@@ -6,7 +6,8 @@ on:
     branches:
       - infra/crewai-bootstrap
     paths:
-      - 'automation/orchestrator/**'
+      - 'src/paper_kestrel/**'
+      - 'tests/**'
       - '.github/workflows/crewai-offline-audit.yml'
 
 permissions:
@@ -18,7 +19,7 @@ jobs:
     timeout-minutes: 10
     defaults:
       run:
-        working-directory: automation/orchestrator
+        working-directory: .
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
