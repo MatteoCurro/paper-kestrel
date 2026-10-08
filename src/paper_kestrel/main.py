@@ -750,6 +750,7 @@ Rules:
 def execute_repair_plan(
     repair_plan: RepairPlan,
     round_no: int,
+    spec_path: Path,
     spec: str,
     master: str,
     advice: str,
@@ -792,9 +793,10 @@ def execute_repair_plan(
             effort=assignment.effort,
             max_iterations=assignment.max_iterations,
             budget_usd=assignment.budget_usd,
+            memory_scopes=assignment.memory_scopes,
         )
         before_diff = git_diff(Path(os.environ["AGENT_WORKSPACE"]))
-        summary = execute_work_item(item, spec, master, advice, handoffs, run_budget)
+        summary = execute_work_item(item, spec_path, spec, master, advice, handoffs, run_budget)
         after_diff = git_diff(Path(os.environ["AGENT_WORKSPACE"]))
         changed = after_diff != before_diff
         changed_any = changed_any or changed
@@ -813,6 +815,7 @@ def execute_repair_plan(
 
 def execute_work_item(
     item: WorkItem,
+    spec_path: Path,
     spec: str,
     master: str,
     advice: str,
@@ -826,6 +829,8 @@ def execute_work_item(
     before = float(getattr(EMITTER, "total_cost", 0.0) or 0.0)
     worker = agent_for(item.role, writable=True, max_iter=item.max_iterations)
     board = "\n".join(f"- {x}" for x in handoffs[-8:]) or "- No prior team handoffs."
+    project_memory = load_common_memory(spec_path)
+    domain_memory = load_domain_memory(spec_path, item.role, item.memory_scopes)
     output = run_single(
         worker,
         f"""GOVERNING MASTER PLAN:
@@ -833,6 +838,12 @@ def execute_work_item(
 
 CURRENT OWNER SPECIFICATION:
 {spec}
+
+PERSISTENT PROJECT MEMORY:
+{project_memory}
+
+RELEVANT DOMAIN MEMORY:
+{domain_memory}
 
 WORK ITEM:
 {item.model_dump_json(indent=2)}
@@ -1036,7 +1047,7 @@ Do not redesign the whole solution. Do not write code. Be concise and surface on
         if missing:
             raise RuntimeError(f"Invalid plan: {item.id} depends on unfinished {missing}")
         try:
-            summary = execute_work_item(item, spec, master, advice, team_handoffs, run_budget)
+            summary = execute_work_item(item, spec_path, spec, master, advice, team_handoffs, run_budget)
             event_log.append({"stage": "implementation", "item": item.id, "role": item.role, "summary": summary[-6000:]})
             team_handoffs.append(compact_handoff(_role_title(item.role), summary))
             EMITTER.emit(
@@ -1062,7 +1073,7 @@ Do not redesign the whole solution. Do not write code. Be concise and surface on
                 max_iterations=3,
                 budget_usd=min(0.15, max(0.05, remaining_budget(run_budget) - 0.10)),
             )
-            summary = execute_work_item(fallback, spec, master, advice, team_handoffs, run_budget)
+            summary = execute_work_item(fallback, spec_path, spec, master, advice, team_handoffs, run_budget)
             event_log.append({"stage": "fallback", "item": fallback.id, "role": fallback.role, "summary": summary[-6000:]})
             team_handoffs.append(compact_handoff(_role_title(fallback.role), summary))
             completed.append(item.id)
@@ -1181,6 +1192,7 @@ Do not redesign the whole solution. Do not write code. Be concise and surface on
             changed = execute_repair_plan(
                 repair_plan,
                 round_no + 1,
+                spec_path,
                 spec,
                 master,
                 advice,
