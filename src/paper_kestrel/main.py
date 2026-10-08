@@ -886,14 +886,21 @@ Do not redesign the whole solution. Do not write code. Be concise and surface on
             agent="Delivery Director",
             status="done",
             phase="implementation",
-            details={"work_item": item.id, "to": item.role},
+            details={
+                "work_item": item.id,
+                "to": item.role,
+                "effort": item.effort,
+                "max_iterations": item.max_iterations,
+                "budget_usd": item.budget_usd,
+            },
         )
         missing = [d for d in item.depends_on if d not in completed]
         if missing:
             raise RuntimeError(f"Invalid plan: {item.id} depends on unfinished {missing}")
         try:
-            summary = execute_work_item(item, spec, advice)
+            summary = execute_work_item(item, spec, master, advice, team_handoffs, run_budget)
             event_log.append({"stage": "implementation", "item": item.id, "role": item.role, "summary": summary[-6000:]})
+            team_handoffs.append(compact_handoff(_role_title(item.role), summary))
             EMITTER.emit(
                 "agent.report",
                 summary[-640:],
@@ -903,6 +910,8 @@ Do not redesign the whole solution. Do not write code. Be concise and surface on
                 details={"work_item": item.id},
             )
             completed.append(item.id)
+        except BudgetStop:
+            raise
         except Exception as exc:
             event_log.append({"stage": "blocked", "item": item.id, "role": item.role, "error": str(exc)})
             fallback = WorkItem(
@@ -911,9 +920,13 @@ Do not redesign the whole solution. Do not write code. Be concise and surface on
                 objective=f"Unblock and complete this failed work item: {item.objective}. Failure: {exc}",
                 acceptance_criteria=item.acceptance_criteria,
                 files_hint=item.files_hint,
+                effort="small",
+                max_iterations=3,
+                budget_usd=min(0.15, max(0.05, remaining_budget(run_budget) - 0.10)),
             )
-            summary = execute_work_item(fallback, spec, advice)
+            summary = execute_work_item(fallback, spec, master, advice, team_handoffs, run_budget)
             event_log.append({"stage": "fallback", "item": fallback.id, "role": fallback.role, "summary": summary[-6000:]})
+            team_handoffs.append(compact_handoff(_role_title(fallback.role), summary))
             completed.append(item.id)
 
     max_repairs = int(os.environ.get("MAX_REPAIR_ROUNDS", "4"))
