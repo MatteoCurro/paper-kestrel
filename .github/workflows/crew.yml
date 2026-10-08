@@ -31,6 +31,10 @@ jobs:
       MAX_RPM: "30"
       MAX_RUN_COST_USD: "0.75"
       HARD_RUN_COST_USD: "0.75"
+      MILESTONE_KEY: ${{ vars.MILESTONE_KEY }}
+      MODEL_PRICING_JSON: ${{ secrets.MODEL_PRICING_JSON }}
+      CREW_BUDGET_URL: "https://xiiexzvuvzsiacbmwras.supabase.co/functions/v1/crew-budget"
+      CREW_BUDGET_AUDIENCE: "crew-budget-supabase"
       JARVIS_INGEST_URL: "https://xiiexzvuvzsiacbmwras.supabase.co/functions/v1/jarvis-ingest"
       JARVIS_AUDIENCE: "jarvis-supabase"
       JARVIS_SPEC_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.spec_path || 'orders/current.md' }}
