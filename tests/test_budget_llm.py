@@ -27,8 +27,12 @@ class GuardedLLMTests(unittest.TestCase):
             "OPENAI_API_KEY": "offline-mock-never-used",
         })
         self.env.start()
+        self.no_network = patch("socket.socket.connect",
+                                side_effect=AssertionError("network forbidden in offline tests"))
+        self.no_network.start()
 
     def tearDown(self):
+        self.no_network.stop()
         self.env.stop()
         self.store.db.close()
         self.tmp.cleanup()
