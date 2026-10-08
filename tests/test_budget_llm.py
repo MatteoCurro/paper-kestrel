@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from crewai import LLM
+from crewai import BaseLLM
 from paper_kestrel.budget import BudgetAdmissionError
 from paper_kestrel.budget_llm import BudgetedLLM
 from paper_kestrel.state import RunStore
@@ -34,7 +34,9 @@ class GuardedLLMTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def llm(self):
-        return BudgetedLLM(model="openai/gpt-4o-mini", max_completion_tokens=1024)
+        llm = BudgetedLLM(model="openai/gpt-4o-mini", max_completion_tokens=1024)
+        self.assertIsInstance(llm, BaseLLM)
+        return llm
 
     def test_reservation_happens_before_provider(self):
         llm = self.llm()
@@ -43,14 +45,14 @@ class GuardedLLMTests(unittest.TestCase):
             self.assertEqual(pending, 1)
             return "model-output"
         with patch("paper_kestrel.budget_llm.reserve_remote", side_effect=lambda **k: None) as remote:
-            with patch.object(LLM, "call", fake_transport):
+            with patch.object(type(llm._inner), "call", fake_transport):
                 self.assertEqual(llm.call("hello"), "model-output")
             remote.assert_called_once()
 
     def test_repeated_calls_reserve_separately(self):
         llm = self.llm()
         with patch("paper_kestrel.budget_llm.reserve_remote"):
-            with patch.object(LLM, "call", lambda *_a, **_kw: "ok"):
+            with patch.object(type(llm._inner), "call", lambda *_a, **_kw: "ok"):
                 llm.call("one")
                 llm.call("two")
         self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM reservations").fetchone()[0], 2)
@@ -59,7 +61,7 @@ class GuardedLLMTests(unittest.TestCase):
         llm = self.llm()
         with patch("paper_kestrel.budget_llm.reserve_remote",
                    side_effect=BudgetAdmissionError("remote offline")):
-            with patch.object(LLM, "call", side_effect=AssertionError("provider called")):
+            with patch.object(type(llm._inner), "call", side_effect=AssertionError("provider called")):
                 with self.assertRaises(BudgetAdmissionError):
                     llm.call("hello")
         self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM reservations").fetchone()[0],1)
@@ -67,20 +69,20 @@ class GuardedLLMTests(unittest.TestCase):
     def test_unpriced_model_never_calls_provider(self):
         llm = self.llm()
         os.environ.pop("MODEL_PRICING_JSON")
-        with patch.object(LLM, "call", side_effect=AssertionError("provider called")):
+        with patch.object(type(llm._inner), "call", side_effect=AssertionError("provider called")):
             with self.assertRaises(BudgetAdmissionError):
                 llm.call("hello")
 
     def test_missing_store_context_never_calls_provider(self):
         llm = self.llm()
         os.environ.pop("RUN_STATE_DB")
-        with patch.object(LLM, "call", side_effect=AssertionError("provider called")):
+        with patch.object(type(llm._inner), "call", side_effect=AssertionError("provider called")):
             with self.assertRaises(BudgetAdmissionError):
                 llm.call("hello")
 
     def test_oversized_input_never_calls_provider(self):
         llm = self.llm()
-        with patch.object(LLM, "call", side_effect=AssertionError("provider called")):
+        with patch.object(type(llm._inner), "call", side_effect=AssertionError("provider called")):
             with self.assertRaises(BudgetAdmissionError):
                 llm.call("x" * 11000)
 
