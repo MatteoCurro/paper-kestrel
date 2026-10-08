@@ -1,0 +1,35 @@
+name: CrewAI offline safety audit
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - infra/crewai-bootstrap
+    paths:
+      - 'automation/orchestrator/**'
+      - '.github/workflows/crewai-offline-audit.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: automation/orchestrator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Syntax check
+        run: python -m compileall -q src/paper_kestrel tests
+      - name: Install orchestrator for offline tests
+        run: python -m pip install --disable-pip-version-check -e .
+      - name: Run regression suite without model keys
+        env:
+          OPENAI_API_KEY: ''
+          JARVIS_INGEST_URL: ''
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
