@@ -52,7 +52,7 @@ def reserve_remote(*, reservation_id: str, milestone: str, amount_usd: Decimal) 
             "action": "reserve",
             "reservation_id": reservation_id,
             "milestone": milestone,
-            "amount_usd": float(amount_usd),
+            "amount_usd": format(amount_usd, ".6f"),
         }).encode("utf-8"),
         method="POST",
         headers={
