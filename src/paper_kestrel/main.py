@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from .tools import developer_tools, reviewer_tools
 from .jarvis import EMITTER
 from .state import RunStore
+from .recovery import CheckpointJournal, fingerprint
 from .budget_llm import BudgetedLLM
 
 
@@ -359,57 +360,79 @@ def compact_handoff(role: str, summary: str, limit: int = 1200) -> str:
 
 
 def run_single(agent: Agent, description: str, expected: str, output_pydantic=None):
-    task = Task(
-        description=description,
-        expected_output=expected,
-        agent=agent,
-        output_pydantic=output_pydantic,
-    )
-    crew = Crew(
-        agents=[agent],
-        tasks=[task],
-        process=Process.sequential,
-        verbose=False,
-        max_rpm=int(os.environ.get("MAX_RPM", "30")),
-    )
-    phase = _jarvis_phase(agent.role)
-    model_name = getattr(agent.llm, "model", None)
-    EMITTER.emit(
-        "agent.started",
-        f"{agent.role}: attività avviata",
-        agent=agent.role,
-        status="working",
-        phase=phase,
-        model=model_name,
-    )
+    """One paid agent kickoff; a crashed or unknown one is never auto-reissued."""
+    store = getattr(EMITTER, "run_store", None)
+    if store is None:
+        raise RuntimeError("RunStore is required before any agent can call an LLM")
+    journal = CheckpointJournal(store)
+    inputs = {
+        "agent": agent.role,
+        "description": description,
+        "expected": expected,
+        "output_type": getattr(output_pydantic, "__name__", None),
+    }
+    step_key = "llm:" + fingerprint(inputs)
+    cached = journal.begin(step_key, inputs)
+    if cached is not None:
+        if output_pydantic is not None:
+            return output_pydantic.model_validate(cached["result"])
+        return cached["result"]
     try:
+        task = Task(
+            description=description,
+            expected_output=expected,
+            agent=agent,
+            output_pydantic=output_pydantic,
+        )
+        crew = Crew(
+            agents=[agent],
+            tasks=[task],
+            process=Process.sequential,
+            verbose=False,
+            max_rpm=int(os.environ.get("MAX_RPM", "30")),
+        )
+        phase = _jarvis_phase(agent.role)
+        model_name = getattr(agent.llm, "model", None)
+        EMITTER.emit(
+            "agent.started",
+            f"{agent.role}: attività avviata",
+            agent=agent.role,
+            status="working",
+            phase=phase,
+            model=model_name,
+        )
         result = crew.kickoff()
-    except Exception as exc:
+        if output_pydantic is not None:
+            parsed = task.output.pydantic
+            if parsed is None:
+                raise RuntimeError(f"Structured output missing from {agent.role}")
+            output = parsed.model_dump(mode="json")
+            journal.complete(step_key, inputs, {"result": output})
+            return parsed
+        output = str(result)
+        journal.complete(step_key, inputs, {"result": output})
+        EMITTER.emit(
+            "agent.completed",
+            f"{agent.role}: attività completata",
+            agent=agent.role,
+            status="done",
+            phase=phase,
+            model=model_name,
+            usage=getattr(result, "token_usage", None),
+        )
+        return output
+    except BaseException as exc:
+        # The provider call or filesystem tools may already have side effects.
+        # A recovered run must be explicitly reconciled before attempting again.
+        journal.uncertain(step_key)
         EMITTER.emit(
             "agent.failed",
             f"{agent.role}: errore {type(exc).__name__}",
             agent=agent.role,
             status="failed",
-            phase=phase,
-            model=model_name,
+            phase=_jarvis_phase(agent.role),
         )
         raise
-    EMITTER.emit(
-        "agent.completed",
-        f"{agent.role}: attività completata",
-        agent=agent.role,
-        status="done",
-        phase=phase,
-        model=model_name,
-        usage=getattr(result, "token_usage", None),
-    )
-    if output_pydantic is not None:
-        parsed = task.output.pydantic
-        if parsed is None:
-            raise RuntimeError(f"Structured output missing from {agent.role}: {result}")
-        return parsed
-    return str(result)
-
 
 def _normalized_test_tail(output: str, roots: list[Path], limit: int = 16000) -> str:
     normalized = output
