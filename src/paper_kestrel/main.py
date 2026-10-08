@@ -673,27 +673,61 @@ def execute_repair_plan(repair_plan: RepairPlan, round_no: int, spec: str, advic
         )
 
 
-def execute_work_item(item: WorkItem, spec: str, advice: str) -> str:
-    worker = agent_for(item.role, writable=True)
-    return run_single(
+def execute_work_item(
+    item: WorkItem,
+    spec: str,
+    master: str,
+    advice: str,
+    handoffs: list[str],
+    run_budget: float,
+) -> str:
+    label = f"{item.id} / {_role_title(item.role)}"
+    if not enforce_budget(run_budget, label, optional=item.optional, reserve=0.18):
+        return f"SKIPPED_OPTIONAL: {label}"
+
+    before = float(getattr(EMITTER, "total_cost", 0.0) or 0.0)
+    worker = agent_for(item.role, writable=True, max_iter=item.max_iterations)
+    board = "\n".join(f"- {x}" for x in handoffs[-8:]) or "- No prior team handoffs."
+    output = run_single(
         worker,
-        f"""OWNER SPECIFICATION:
+        f"""GOVERNING MASTER PLAN:
+{master}
+
+CURRENT OWNER SPECIFICATION:
 {spec}
 
 WORK ITEM:
 {item.model_dump_json(indent=2)}
 
-ADVISORY CONTEXT:
+SHARED ADVISORY CONTEXT:
 {advice}
 
-Work directly in the repository using the provided file/search/write/check tools.
-First inspect the relevant existing code. Make the smallest coherent implementation that satisfies the acceptance criteria.
-Do not edit GitHub workflows, deployment credentials, generated runtime data or unrelated features.
-Preserve IT/EN/FR/DE parity for user-facing strings.
-Run targeted checks before finishing. If blocked, inspect more context and choose a safe fallback instead of inventing APIs.
-At the end summarize exactly what changed and any residual risk.""",
-        "Implemented code changes plus a concise implementation summary and tests run.",
+TEAM HANDOFF BOARD:
+{board}
+
+OPERATING CONTRACT:
+- Your iteration limit is a ceiling, not a target. Stop as soon as acceptance criteria are satisfied.
+- Your planned spend is ${item.budget_usd:.2f}; minimize tool/LLM turns and reread only what changed.
+- Inspect existing code first, then make the smallest coherent implementation.
+- Reuse decisions and facts already present on the handoff board; do not redo another specialist's analysis unless evidence contradicts it.
+- Run the smallest targeted check that proves your change before finishing.
+- Do not edit GitHub workflows, deployment credentials, generated runtime data or unrelated features.
+- Preserve IT/EN/FR/DE parity for user-facing strings where relevant.
+- If the requested work is already satisfied, report that and stop without creating churn.
+- If blocked by a genuine external decision or unavailable credential, stop and state exactly what is needed; do not invent APIs.
+- Finish with a concise handoff: what changed, checks run, residual blockers, and what the next role needs to know.""",
+        "Implemented code changes plus a concise team handoff and tests run.",
     )
+    emit_budget_result(_role_title(item.role), item.budget_usd, before, run_budget, label=item.id)
+    EMITTER.emit(
+        "handoff",
+        compact_handoff(_role_title(item.role), output, 620),
+        agent=_role_title(item.role),
+        status="done",
+        phase="implementation",
+        details={"to": "Team", "work_item": item.id, "kind": "implementation"},
+    )
+    return output
 
 
 def cli() -> None:
