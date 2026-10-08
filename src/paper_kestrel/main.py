@@ -190,6 +190,82 @@ def _role_title(role: str) -> str:
     }.get(role, role)
 
 
+class BudgetStop(RuntimeError):
+    pass
+
+
+def load_master_context(spec_path: Path, spec: str) -> str:
+    match = re.search(r"(?im)^Master plan:\s*`?([^\n`]+)`?\s*$", spec)
+    if not match:
+        return "No separate master plan referenced; follow the owner specification as the governing plan."
+    raw = match.group(1).strip()
+    repo_root = spec_path.parent.parent if spec_path.parent.name == "orders" else spec_path.parent
+    candidate = (repo_root / raw).resolve()
+    if repo_root not in candidate.parents and candidate != repo_root:
+        return f"Master plan reference rejected because it escapes the orchestrator repository: {raw}"
+    if not candidate.is_file():
+        return f"Referenced master plan not found: {raw}"
+    text = candidate.read_text(encoding="utf-8", errors="replace")
+    return text[:60000]
+
+
+def effective_run_budget(plan: DispatchPlan) -> float:
+    soft_cap = float(os.environ.get("MAX_RUN_COST_USD", "1.25"))
+    hard_cap = float(os.environ.get("HARD_RUN_COST_USD", "1.50"))
+    return max(0.25, min(plan.run_budget_usd, soft_cap, hard_cap))
+
+
+def remaining_budget(limit: float) -> float:
+    return max(0.0, limit - float(getattr(EMITTER, "total_cost", 0.0) or 0.0))
+
+
+def enforce_budget(limit: float, label: str, *, optional: bool = False, reserve: float = 0.0) -> bool:
+    spent = float(getattr(EMITTER, "total_cost", 0.0) or 0.0)
+    remaining = max(0.0, limit - spent)
+    if optional and remaining <= max(0.08, reserve):
+        EMITTER.emit(
+            "budget.skipped",
+            f"{label}: attività opzionale saltata per rispettare il budget",
+            agent="Delivery Director",
+            status="done",
+            phase="planning",
+            details={"spent_usd": round(spent, 4), "remaining_usd": round(remaining, 4), "limit_usd": round(limit, 4)},
+        )
+        return False
+    if spent >= limit:
+        raise BudgetStop(f"Run budget exhausted before {label}: spent ${spent:.3f} / limit ${limit:.3f}")
+    return True
+
+
+def emit_budget_result(agent_role: str, planned: float, before: float, limit: float, *, label: str) -> float:
+    after = float(getattr(EMITTER, "total_cost", 0.0) or 0.0)
+    spent = max(0.0, after - before)
+    ratio = spent / planned if planned > 0 else 0.0
+    status = "over" if ratio > 1.25 else "ok"
+    EMITTER.emit(
+        "budget.agent",
+        f"{agent_role}: ${spent:.3f} / ${planned:.3f} previsti",
+        agent=agent_role,
+        status="done",
+        phase="planning",
+        details={
+            "label": label,
+            "planned_usd": round(planned, 4),
+            "actual_usd": round(spent, 4),
+            "ratio": round(ratio, 3),
+            "run_limit_usd": round(limit, 4),
+            "run_spent_usd": round(after, 4),
+            "budget_status": status,
+        },
+    )
+    return spent
+
+
+def compact_handoff(role: str, summary: str, limit: int = 1200) -> str:
+    clean = " ".join(summary.split())
+    return f"{role}: {clean[:limit]}"
+
+
 def run_single(agent: Agent, description: str, expected: str, output_pydantic=None):
     task = Task(
         description=description,
