@@ -162,6 +162,23 @@ class RunStore:
             self.db.execute("DELETE FROM leases WHERE workspace=? AND run_id=? AND work_item=?",
                             (workspace,self.run_id,item))
 
+    def enqueue_event(self, event_id: str, payload: dict) -> bool:
+        """Durably enqueue a Jarvis message; first writer wins on duplicate ID."""
+        if not event_id or not isinstance(payload, dict):
+            raise ValueError("Outbox event must have a stable ID and a JSON object")
+        now = utc_now()
+        with self.tx():
+            found = self.db.execute(
+                "SELECT 1 FROM outbox WHERE event_id=?", (event_id,)
+            ).fetchone()
+            if found:
+                return False
+            self.db.execute(
+                "INSERT INTO outbox VALUES(?,?,?,?,?)",
+                (event_id,self.run_id,json.dumps(payload,sort_keys=True),0,now),
+            )
+        return True
+
     def pending_outbox(self) -> list[tuple[str,dict]]:
         with self._lock:
             return [(row[0],json.loads(row[1])) for row in self.db.execute(
