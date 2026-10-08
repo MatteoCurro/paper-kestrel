@@ -172,3 +172,18 @@ The reviewer must inspect the actual responsive-test evidence and the actual OTP
 - No DNS changes.
 - No Supabase schema/config/email-template changes.
 - No secret changes.
+
+## Orchestration observability
+
+Jarvis should expose the new company-style orchestration signals when present in agent_events metadata:
+
+- planned vs actual USD spend per agent/task;
+- run budget and actual total;
+- concise team handoffs;
+- reviewer disposition: approve / approve_with_suggestions / block;
+- reviewer non-blocking suggestions;
+- stop reason;
+- whether owner interaction is genuinely required.
+
+These are display-only. Do not derive hidden reasoning or expose raw metadata dumps.
+
