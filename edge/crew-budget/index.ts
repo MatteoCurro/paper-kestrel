@@ -6,6 +6,7 @@ import { createRemoteJWKSet, jwtVerify } from "npm:jose@6.1.0";
 const ISSUER = "https://token.actions.githubusercontent.com";
 const REPOSITORY = "MatteoCurro/paper-kestrel";
 const WORKFLOW = "Maintenance pass";
+const PROBE_WORKFLOW = "CrewAI budget OIDC smoke";
 const AUDIENCE = "crew-budget-supabase";
 const ALLOWED_REFS = new Set(["refs/heads/main", "refs/heads/infra/transactional-v2"]);
 const JWKS = createRemoteJWKSet(new URL(ISSUER + "/.well-known/jwks"));
@@ -34,7 +35,9 @@ Deno.serve(async (request: Request) => {
     const { payload } = await jwtVerify(bearer.slice(7), JWKS, {
       issuer: ISSUER, audience: AUDIENCE,
     });
-    if (payload.repository !== REPOSITORY || payload.workflow !== WORKFLOW ||
+    const workflow = String(payload.workflow || "");
+    if (payload.repository !== REPOSITORY ||
+        ![WORKFLOW, PROBE_WORKFLOW].includes(workflow) ||
         !ALLOWED_REFS.has(String(payload.ref || ""))) {
       return respond({ error: "unauthorized Actions identity" }, 403);
     }
@@ -48,6 +51,13 @@ Deno.serve(async (request: Request) => {
     const runId = String(numericRun);
     const reservationPrefix = runId + ":" + String(numericAttempt) + ":";
     const body = await request.json();
+    if (body?.action === "probe" && workflow === PROBE_WORKFLOW) {
+      return respond({ ok: true, authorized: true, repository: REPOSITORY,
+                       github_run_id: runId, branch: String(payload.ref) });
+    }
+    if (workflow !== WORKFLOW) {
+      return respond({ error: "workflow cannot reserve budget" }, 403);
+    }
     if (body?.action !== "reserve" || !validIdentifier(body?.milestone) ||
         !validIdentifier(body?.reservation_id) ||
         !body.reservation_id.startsWith(reservationPrefix)) {
