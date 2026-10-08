@@ -377,6 +377,211 @@ def run_changed_js_test(path: str, work: Path) -> tuple[int, str]:
         return 124, "TIMEOUT"
 
 
+def changed_paths(work: Path) -> list[str]:
+    _mark_untracked_for_diff(work)
+    p = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=ACMRTUXB", "--", ".", ":(exclude)node_modules/**"],
+        cwd=work,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=60,
+    )
+    return sorted({line.strip() for line in p.stdout.splitlines() if line.strip()})
+
+
+def _required_paths_from_spec(spec: str) -> list[str]:
+    match = re.search(
+        r"(?ims)^##\s+Required source files\s*$\n(.*?)(?=^##\s|\Z)",
+        spec,
+    )
+    if not match:
+        return []
+    paths: list[str] = []
+    for raw in re.findall(r"`([^`\n]+)`", match.group(1)):
+        path = raw.strip().strip("/")
+        if not path or any(ch in path for ch in "*{}"):
+            continue
+        if path.startswith(("public.", "auth.", "supabase.")):
+            continue
+        if "/" in path or path.endswith((".html", ".js", ".cjs", ".css", ".json", ".py", ".php", ".md")):
+            paths.append(path)
+    return sorted(set(paths))
+
+
+def candidate_integrity_check(spec: str, work: Path) -> tuple[int, str]:
+    issues: list[str] = []
+
+    for path in _required_paths_from_spec(spec):
+        if not (work / path).is_file():
+            issues.append(f"required source file missing: {path}")
+
+    for path in changed_paths(work):
+        target = work / path
+        if not target.is_file():
+            continue
+        text = target.read_text(encoding="utf-8", errors="replace")
+        if path.endswith(".cjs"):
+            for ref in re.findall(r"['\"](tests/[A-Za-z0-9_./-]+\.cjs)['\"]", text):
+                if not (work / ref).is_file():
+                    issues.append(f"{path} references missing test: {ref}")
+        if path.endswith(".html"):
+            for ref in re.findall(r"(?:src|href)=['\"]([^'\"]+)['\"]", text, flags=re.I):
+                clean = ref.split("?", 1)[0].split("#", 1)[0]
+                if clean.startswith(("assets/", "js/", "config/", "locales/")) and not (work / clean).is_file():
+                    issues.append(f"{path} references missing local asset: {clean}")
+
+    if issues:
+        return 1, "CANDIDATE_INTEGRITY_FAILED:\n" + "\n".join(f"- {x}" for x in sorted(set(issues)))
+    required = _required_paths_from_spec(spec)
+    return 0, (
+        "candidate integrity: ok"
+        + (f" · required paths verified: {len(required)}" if required else "")
+    )
+
+
+def collect_validation_results(checks: list[str], spec: str, work: Path) -> dict[str, dict]:
+    results: dict[str, dict] = {}
+
+    EMITTER.emit(
+        "check.started",
+        "candidate_integrity: controllo in corso",
+        agent="Controller",
+        status="checking",
+        phase="testing",
+        details={"check": "candidate_integrity"},
+    )
+    rc, out = candidate_integrity_check(spec, work)
+    results["candidate_integrity"] = {"returncode": rc, "output": out[-12000:]}
+    EMITTER.emit(
+        "check.completed",
+        f"candidate_integrity: {'ok' if rc == 0 else 'fallito'}",
+        agent="Controller",
+        status="success" if rc == 0 else "failed",
+        phase="testing",
+        details={"check": "candidate_integrity", "returncode": rc},
+    )
+
+    for check in checks:
+        EMITTER.emit(
+            "check.started",
+            f"{check}: controllo in corso",
+            agent="Controller",
+            status="checking",
+            phase="testing",
+            details={"check": check},
+        )
+        rc, out = run_check(check, work)
+        results[check] = {"returncode": rc, "output": out[-12000:]}
+        EMITTER.emit(
+            "check.completed",
+            f"{check}: {'ok' if rc == 0 else 'fallito'}",
+            agent="Controller",
+            status="success" if rc == 0 else "failed",
+            phase="testing",
+            details={"check": check, "returncode": rc},
+        )
+
+    for test_path in changed_js_tests(work):
+        EMITTER.emit(
+            "check.started",
+            f"{test_path}: test mirato in corso",
+            agent="Controller",
+            status="checking",
+            phase="testing",
+            details={"check": "changed_js_test", "path": test_path},
+        )
+        rc, out = run_changed_js_test(test_path, work)
+        results[f"changed_js_test:{test_path}"] = {"returncode": rc, "output": out[-12000:]}
+        EMITTER.emit(
+            "check.completed",
+            f"{test_path}: {'ok' if rc == 0 else 'fallito'}",
+            agent="Controller",
+            status="success" if rc == 0 else "failed",
+            phase="testing",
+            details={"check": "changed_js_test", "path": test_path, "returncode": rc},
+        )
+    return results
+
+
+def coordinate_repairs(spec: str, problems: str, diff: str) -> RepairPlan:
+    coordinator = agent_for("delivery_director", writable=False)
+    repair_plan = run_single(
+        coordinator,
+        f"""Create a focused multi-specialist repair plan for this failed candidate.
+
+OWNER SPECIFICATION:
+{spec}
+
+BLOCKING EVIDENCE:
+{problems}
+
+CURRENT DIFF:
+{diff[:30000]}
+
+Rules:
+- Use at most four repair assignments.
+- Use each specialist role at most once; group related blockers owned by the same specialist.
+- Assign frontend behavior/runtime defects to frontend_lead.
+- Assign responsive/accessibility/test-harness/browser-contract defects to frontend_quality.
+- Assign auth/API/Supabase/integration defects to backend_lead.
+- Assign transit/data-pipeline defects to data_platform.
+- Assign cross-cutting contract/architecture blockers to solution_architect.
+- Include every concrete blocker that can be fixed from the repository.
+- Do not ask the owner for information already present in the specification.
+- Do not broaden scope, change deployment workflows, weaken existing tests, or invent backend APIs.
+- Every assignment must have observable acceptance criteria and must rerun its targeted checks before finishing.
+""",
+        "A structured repair plan grouped by specialist ownership.",
+        RepairPlan,
+    )
+    repair_plan.assignments = repair_plan.assignments[:4]
+    if not repair_plan.assignments:
+        repair_plan.assignments = [
+            RepairAssignment(
+                role="solution_architect",
+                objective="Resolve the blocking evidence without broadening scope.\n" + problems,
+                acceptance_criteria=["Blocking evidence is resolved", "Targeted checks pass", "No unrelated changes"],
+            )
+        ]
+    return repair_plan
+
+
+def execute_repair_plan(repair_plan: RepairPlan, round_no: int, spec: str, advice: str, event_log: list[dict]) -> None:
+    seen: set[str] = set()
+    for index, assignment in enumerate(repair_plan.assignments, start=1):
+        if assignment.role in seen:
+            continue
+        seen.add(assignment.role)
+        EMITTER.emit(
+            "handoff",
+            f"Repair #{round_no} → {_role_title(assignment.role)}: {assignment.objective}",
+            agent="Controller",
+            status="done",
+            phase="repair",
+            details={"repair_round": round_no, "to": assignment.role, "assignment": index},
+        )
+        item = WorkItem(
+            id=f"repair-{round_no}-{index}",
+            role=assignment.role,
+            objective=assignment.objective,
+            acceptance_criteria=assignment.acceptance_criteria or [
+                "Blocking evidence is resolved",
+                "Targeted checks pass",
+                "No unrelated changes",
+            ],
+        )
+        summary = execute_work_item(item, spec, advice)
+        event_log.append(
+            {
+                "stage": "repair",
+                "round": round_no,
+                "role": assignment.role,
+                "summary": summary[-6000:],
+            }
+        )
+
+
 def execute_work_item(item: WorkItem, spec: str, advice: str) -> str:
     worker = agent_for(item.role, writable=True)
     return run_single(
