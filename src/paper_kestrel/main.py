@@ -777,32 +777,72 @@ Rules:
         },
     )
 
-    advice_parts: list[str] = []
-    if plan.use_solution_architect:
-        advice_parts.append(
-            run_single(
-                agent_for("solution_architect"),
-                f"Review the specification and current repository architecture. Identify boundaries, likely regression points and constraints the implementers must preserve.\n\n{spec}",
-                "Concise architecture constraints and implementation guidance.",
-            )
-        )
+    advisor_specs: list[tuple[str, str, float]] = []
+    planned_roles = {item.role for item in plan.work_items}
+    if plan.use_solution_architect and "solution_architect" not in planned_roles:
+        advisor_specs.append((
+            "solution_architect",
+            "Review architecture boundaries, dependencies and regression risks. Return only constraints implementers need.",
+            0.10,
+        ))
     if plan.use_product_growth:
-        advice_parts.append(
-            run_single(
-                agent_for("product_growth"),
-                f"Review this change from product, growth, analytics and consent perspectives. Give concrete constraints, not generic marketing copy.\n\n{spec}",
-                "Concise product/growth constraints and measurable acceptance guidance.",
-            )
-        )
+        advisor_specs.append((
+            "product_growth",
+            "Review product value, analytics/consent and conversion implications. Return only actionable constraints.",
+            0.05,
+        ))
     if plan.use_ui_ux:
-        advice_parts.append(
-            run_single(
-                agent_for("ui_ux"),
-                f"Review this change against the existing mobile-first UI. Specify hierarchy, interaction states, responsive behavior and visual constraints the frontend implementer should follow.\n\n{spec}",
-                "Concise UI/UX implementation guidance.",
-            )
+        advisor_specs.append((
+            "ui_ux",
+            "Review information hierarchy, responsive interaction and visual constraints. Return only actionable implementation guidance.",
+            0.08,
+        ))
+
+    def run_advisor(role: str, instruction: str, planned_cost: float) -> str:
+        if not enforce_budget(run_budget, f"advisor {role}", optional=True, reserve=0.30):
+            return ""
+        before = float(getattr(EMITTER, "total_cost", 0.0) or 0.0)
+        output = run_single(
+            agent_for(role, writable=False, max_iter=2),
+            f"""GOVERNING MASTER PLAN:
+{master}
+
+CURRENT OWNER SPECIFICATION:
+{spec}
+
+ADVISORY REQUEST:
+{instruction}
+
+Do not redesign the whole solution. Do not write code. Be concise and surface only constraints or risks that materially affect implementation.""",
+            "A concise advisory note for the implementation team.",
         )
+        emit_budget_result(_role_title(role), planned_cost, before, run_budget, label="advisor")
+        EMITTER.emit(
+            "handoff",
+            compact_handoff(_role_title(role), output, 520),
+            agent=_role_title(role),
+            status="done",
+            phase="architecture",
+            details={"to": "Team", "kind": "advisor"},
+        )
+        return f"{_role_title(role)}: {output}"
+
+    advice_parts: list[str] = []
+    if advisor_specs:
+        with ThreadPoolExecutor(max_workers=min(3, len(advisor_specs))) as pool:
+            futures = {
+                pool.submit(run_advisor, role, instruction, cost): role
+                for role, instruction, cost in advisor_specs
+            }
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                    if result:
+                        advice_parts.append(result)
+                except BudgetStop:
+                    continue
     advice = "\n\n--- ADVISOR ---\n".join(advice_parts) or "No additional advisory review requested."
+    team_handoffs: list[str] = [compact_handoff("Advisor board", x, 1000) for x in advice_parts]
 
     completed: list[str] = []
     for item in plan.work_items:
