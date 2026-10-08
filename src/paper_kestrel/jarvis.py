@@ -9,6 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 
@@ -292,6 +293,17 @@ def main() -> None:
     args = parser.parse_args()
     if args.spec_path:
         EMITTER.set_spec(args.spec_path)
+    state_path = os.environ.get("RUN_STATE_DB", "").strip()
+    state_id = os.environ.get("RUN_STATE_ID", "").strip()
+    if state_path and state_id and Path(state_path).is_file():
+        from .state import RunStore
+        store = RunStore(Path(state_path), state_id)
+        if not store.db.execute("SELECT 1 FROM runs WHERE run_id=?", (state_id,)).fetchone():
+            store.db.close()
+            raise SystemExit("Cannot send Jarvis event: run ledger not initialized")
+        EMITTER.run_store = store
+    elif EMITTER.enabled:
+        raise SystemExit("Cannot send Jarvis event without a durable initialized outbox")
     EMITTER.emit(
         args.event_type,
         args.message,
