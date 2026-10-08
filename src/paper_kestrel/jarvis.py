@@ -157,8 +157,6 @@ class JarvisEmitter:
         event_key: str | None = None,
         details: dict[str, Any] | None = None,
     ) -> None:
-        if not self.enabled:
-            return
         usage_data = _usage_dict(usage)
         cost = estimate_cost(model, usage_data)
         with self._lock:
@@ -225,7 +223,8 @@ class JarvisEmitter:
         if details and details.get("to"):
             payload["handoff_to"] = str(details["to"])[:160]
 
-        self._post(payload)
+        if self.enabled:
+            self._post(payload)
 
 
 EMITTER = JarvisEmitter()
