@@ -891,6 +891,7 @@ def cli() -> None:
     spec_path = Path(args.spec).resolve()
     spec = spec_path.read_text(encoding="utf-8")
     master = load_master_context(spec_path, spec)
+    common_memory = load_common_memory(spec_path)
     EMITTER.set_spec(args.spec)
     EMITTER.emit(
         "run.started",
@@ -917,12 +918,16 @@ GOVERNING MASTER PLAN:
 CURRENT OWNER SPECIFICATION:
 {spec}
 
+PERSISTENT COMMON PROJECT MEMORY:
+{common_memory}
+
 Rules:
 - The master plan is authoritative for sequencing, boundaries and stopping points. The current specification may narrow it but must not silently broaden it.
 - Maximum six coding work items, but prefer one to three when enough.
 - Use the smallest set of specialists necessary; do not create work merely to involve every role.
 - Order items so dependencies are implemented first.
 - For every work item assign effort, max_iterations and budget_usd proportionate to the task.
+- For every work item assign only the memory_scopes materially relevant to that work. Do not load every domain by default.
 - Typical guidance: tiny=2 iterations/$0.05-$0.10, small=3-4/$0.10-$0.20, medium=4-5/$0.20-$0.35, large=5-7/$0.35-$0.55.
 - Set optional=true for nice-to-have analysis that may be skipped if budget is tight.
 - Set run_budget_usd to the lowest realistic total budget; normal target is $0.60-$1.00 and complex work should rarely exceed $1.25.
@@ -985,6 +990,7 @@ Rules:
         if not enforce_budget(run_budget, f"advisor {role}", optional=True, reserve=0.30):
             return ""
         before = float(getattr(EMITTER, "total_cost", 0.0) or 0.0)
+        advisor_memory = load_domain_memory(spec_path, role)
         output = run_single(
             agent_for(role, writable=False, max_iter=2),
             f"""GOVERNING MASTER PLAN:
@@ -992,6 +998,12 @@ Rules:
 
 CURRENT OWNER SPECIFICATION:
 {spec}
+
+PERSISTENT COMMON PROJECT MEMORY:
+{common_memory}
+
+RELEVANT DOMAIN MEMORY:
+{advisor_memory}
 
 ADVISORY REQUEST:
 {instruction}
@@ -1225,6 +1237,12 @@ Do not redesign the whole solution. Do not write code. Be concise and surface on
         last_failure_signature = None
         enforce_budget(run_budget, "independent QA review", optional=False)
         before_review = float(getattr(EMITTER, "total_cost", 0.0) or 0.0)
+        review_scopes: list[str] = []
+        for planned_item in plan.work_items:
+            for scope in resolve_memory_scopes(planned_item.role, planned_item.memory_scopes):
+                if scope not in review_scopes:
+                    review_scopes.append(scope)
+        review_memory = load_run_memory(spec_path, review_scopes)
         reviewer = agent_for("qa_release", writable=False, max_iter=3)
         final_review = run_single(
             reviewer,
@@ -1235,6 +1253,9 @@ GOVERNING MASTER PLAN:
 
 CURRENT OWNER SPECIFICATION:
 {spec}
+
+PERSISTENT PROJECT MEMORY FOR THIS RUN:
+{review_memory}
 
 DISPATCH PLAN:
 {plan.model_dump_json(indent=2)}
