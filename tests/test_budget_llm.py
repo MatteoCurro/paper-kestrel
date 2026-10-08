@@ -42,6 +42,26 @@ class GuardedLLMTests(unittest.TestCase):
         self.assertIsInstance(llm, BaseLLM)
         return llm
 
+    def test_native_sdk_retries_are_disabled(self):
+        self.assertEqual(self.llm()._inner.max_retries, 0)
+        with self.assertRaises(BudgetAdmissionError):
+            BudgetedLLM(model="openai/gpt-4o-mini",
+                        max_completion_tokens=1024, max_retries=2)
+
+    def test_rate_limit_retry_requires_second_reservation(self):
+        class Throttled(Exception):
+            status_code = 429
+
+        llm = self.llm()
+        with patch("paper_kestrel.budget_llm.reserve_remote") as remote:
+            with patch.object(type(llm._inner), "call",
+                              side_effect=[Throttled("rate limit"), "ok"]):
+                self.assertEqual(llm.call("hello"), "ok")
+        self.assertEqual(remote.call_count, 2)
+        self.assertEqual(self.store.db.execute(
+            "SELECT COUNT(*) FROM reservations"
+        ).fetchone()[0], 2)
+
     def test_reservation_happens_before_provider(self):
         llm = self.llm()
         def fake_transport(_self, *args, **kwargs):
