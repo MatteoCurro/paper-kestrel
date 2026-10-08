@@ -31,6 +31,8 @@ jobs:
       MAX_RPM: "30"
       MAX_RUN_COST_USD: "0.75"
       HARD_RUN_COST_USD: "0.75"
+      RUN_STATE_DB: ${{ github.workspace }}/output/run-state.sqlite3
+      RUN_STATE_ID: ${{ github.run_id }}:${{ github.run_attempt }}
       MILESTONE_KEY: ${{ vars.MILESTONE_KEY }}
       MODEL_PRICING_JSON: ${{ secrets.MODEL_PRICING_JSON }}
       CREW_BUDGET_URL: "https://xiiexzvuvzsiacbmwras.supabase.co/functions/v1/crew-budget"
