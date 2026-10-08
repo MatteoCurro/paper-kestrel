@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import tempfile
 import traceback
@@ -51,6 +52,17 @@ class ReviewDecision(BaseModel):
     summary: str
     blocking_issues: list[str] = Field(default_factory=list)
     repair_role: DeveloperRole = "solution_architect"
+
+
+class RepairAssignment(BaseModel):
+    role: DeveloperRole
+    objective: str
+    acceptance_criteria: list[str] = Field(default_factory=list)
+
+
+class RepairPlan(BaseModel):
+    summary: str
+    assignments: list[RepairAssignment] = Field(default_factory=list)
 
 
 def model(name: str, fallback: str, max_tokens: int = 12000) -> LLM:
@@ -137,7 +149,7 @@ def agent_for(role: str, writable: bool = False) -> Agent:
         tools=tools,
         llm=llm,
         allow_delegation=False,
-        max_iter=6,
+        max_iter=10,
         max_retry_limit=1,
         verbose=False,
     )
