@@ -72,6 +72,9 @@ jobs:
       - name: Install orchestrator
         run: python -m pip install --disable-pip-version-check -e .
 
+      - name: Validate orchestrator syntax
+        run: python -m py_compile src/paper_kestrel/*.py
+
       - name: Clone split workspaces
         shell: bash
         run: |
