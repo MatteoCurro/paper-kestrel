@@ -1097,6 +1097,7 @@ Do not redesign the whole solution. Do not write code. Be concise and surface on
     team_handoffs: list[str] = [compact_handoff("Advisor board", x, 1000) for x in advice_parts]
 
     completed: list[str] = []
+    work_journal = CheckpointJournal(store)
     for item in plan.work_items:
         EMITTER.emit(
             "handoff",
@@ -1115,8 +1116,32 @@ Do not redesign the whole solution. Do not write code. Be concise and surface on
         missing = [d for d in item.depends_on if d not in completed]
         if missing:
             raise RuntimeError(f"Invalid plan: {item.id} depends on unfinished {missing}")
+        work_inputs = {
+            "item": item.model_dump(mode="json"),
+            "spec": fingerprint(spec),
+            "master": fingerprint(master),
+            "advice": fingerprint(advice),
+            "handoffs": fingerprint(team_handoffs),
+        }
+        work_key = "work:" + item.id
         try:
-            summary = execute_work_item(item, spec_path, spec, master, advice, team_handoffs, run_budget)
+            cached_work = work_journal.begin(
+                work_key, work_inputs, candidate_sha=fingerprint(git_diff(work))
+            )
+            if cached_work is None:
+                try:
+                    summary = execute_work_item(
+                        item, spec_path, spec, master, advice, team_handoffs, run_budget
+                    )
+                except BaseException:
+                    work_journal.uncertain(work_key)
+                    raise
+                work_journal.complete(
+                    work_key, work_inputs, {"summary": summary},
+                    candidate_sha=fingerprint(git_diff(work)),
+                )
+            else:
+                summary = cached_work["summary"]
             event_log.append({"stage": "implementation", "item": item.id, "role": item.role, "summary": summary[-6000:]})
             team_handoffs.append(compact_handoff(_role_title(item.role), summary))
             EMITTER.emit(
@@ -1133,7 +1158,7 @@ Do not redesign the whole solution. Do not write code. Be concise and surface on
             raise
         except Exception as exc:
             event_log.append({"stage": "blocked", "item": item.id, "role": item.role, "error": str(exc)})
-            raise RuntimeError(f"Work item {item.id} failed; no automatic architect fallback") from exc
+            raise RuntimeError(f"Work item {item.id} failed; reconciliation required before replay") from exc
 
     max_repairs = min(int(os.environ.get("MAX_REPAIR_ROUNDS", "1")), 1)
     allowed_checks: set[str] = {"full_test", "diff_check", "python_compile", "account_focus"}
