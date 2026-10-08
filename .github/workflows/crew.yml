@@ -25,6 +25,7 @@ jobs:
       GH_TOKEN: ${{ secrets.CREW_GITHUB_TOKEN }}
       TARGET_REPO_A: ${{ secrets.TARGET_REPO_A }}
       TARGET_REPO_B: ${{ secrets.TARGET_REPO_B }}
+      TARGET_BASE_BRANCH: "t-sand"
       MODEL_CORE: ${{ vars.MODEL_CORE || 'openai/gpt-6.1-sol' }}
       MODEL_LIGHT: ${{ vars.MODEL_LIGHT || 'openai/gpt-6-luna' }}
       MAX_REPAIR_ROUNDS: "1"
@@ -62,6 +63,7 @@ jobs:
           test -n "$GH_TOKEN" || { echo "Missing CREW_GITHUB_TOKEN"; exit 2; }
           test -n "$TARGET_REPO_A" || { echo "Missing TARGET_REPO_A"; exit 2; }
           test -n "$TARGET_REPO_B" || { echo "Missing TARGET_REPO_B"; exit 2; }
+          test "$TARGET_BASE_BRANCH" = "t-sand" || { echo "Only t-sand staging PRs allowed"; exit 2; }
           case "$JARVIS_SPEC_PATH" in
             orders/*.md) ;;
             *) echo "spec_path must be under orders/ and end in .md"; exit 2 ;;
@@ -179,11 +181,11 @@ jobs:
 
             if [[ "$crew_rc" == "0" ]]; then
               title="Maintenance pass $GITHUB_RUN_ID"
-              pr_url="$(gh pr create --repo "$target" --base main --head "$branch" --title "$title" --body-file "$body_file")"
+              pr_url="$(gh pr create --repo "$target" --base "$TARGET_BASE_BRANCH" --head "$branch" --title "$title" --body-file "$body_file")"
               event_message="PR pronta per review su $target"
             else
               title="[BLOCKED] Maintenance pass $GITHUB_RUN_ID"
-              pr_url="$(gh pr create --draft --repo "$target" --base main --head "$branch" --title "$title" --body-file "$body_file")"
+              pr_url="$(gh pr create --draft --repo "$target" --base "$TARGET_BASE_BRANCH" --head "$branch" --title "$title" --body-file "$body_file")"
               event_message="Draft PR bloccata preservata su $target"
             fi
 
