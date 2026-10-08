@@ -595,62 +595,111 @@ def collect_validation_results(checks: list[str], spec: str, work: Path) -> dict
     return results
 
 
-def coordinate_repairs(spec: str, problems: str, diff: str) -> RepairPlan:
-    coordinator = agent_for("delivery_director", writable=False)
+def coordinate_repairs(
+    spec: str,
+    master: str,
+    problems: str,
+    diff: str,
+    run_budget: float,
+) -> RepairPlan:
+    enforce_budget(run_budget, "repair coordination", optional=False)
+    before = float(getattr(EMITTER, "total_cost", 0.0) or 0.0)
+    coordinator = agent_for("delivery_director", writable=False, max_iter=2)
     repair_plan = run_single(
         coordinator,
-        f"""Create a focused multi-specialist repair plan for this failed candidate.
+        f"""Create the smallest focused repair plan for this failed candidate.
 
-OWNER SPECIFICATION:
+GOVERNING MASTER PLAN:
+{master}
+
+CURRENT OWNER SPECIFICATION:
 {spec}
 
 BLOCKING EVIDENCE:
 {problems}
 
 CURRENT DIFF:
-{diff[:30000]}
+{diff[:26000]}
 
 Rules:
-- Use at most four repair assignments.
+- Use at most three repair assignments and prefer one when one specialist can resolve all blockers.
 - Use each specialist role at most once; group related blockers owned by the same specialist.
 - Assign frontend behavior/runtime defects to frontend_lead.
 - Assign responsive/accessibility/test-harness/browser-contract defects to frontend_quality.
 - Assign auth/API/Supabase/integration defects to backend_lead.
 - Assign transit/data-pipeline defects to data_platform.
-- Assign cross-cutting contract/architecture blockers to solution_architect.
-- Include every concrete blocker that can be fixed from the repository.
-- Do not ask the owner for information already present in the specification.
-- Do not broaden scope, change deployment workflows, weaken existing tests, or invent backend APIs.
-- Every assignment must have observable acceptance criteria and must rerun its targeted checks before finishing.
+- Assign genuinely cross-cutting contract/architecture blockers to solution_architect.
+- Do not assign an architect merely to restate a blocker another specialist can directly fix.
+- Each assignment must set effort, max_iterations and budget_usd to the smallest realistic values.
+- Treat max_iterations as a ceiling, not a target.
+- Include every concrete repository-fixable blocker, but do not invent new scope.
+- Do not ask the owner for information already present in the master/specification.
+- Do not change deployment workflows, weaken existing tests, or invent backend APIs.
+- Every assignment must have observable acceptance criteria and a targeted check.
 """,
-        "A structured repair plan grouped by specialist ownership.",
+        "A minimal structured repair plan grouped by specialist ownership and bounded by cost.",
         RepairPlan,
     )
-    repair_plan.assignments = repair_plan.assignments[:4]
+    emit_budget_result("Delivery Director", 0.08, before, run_budget, label="repair coordination")
+    repair_plan.assignments = repair_plan.assignments[:3]
+
     if not repair_plan.assignments:
         repair_plan.assignments = [
             RepairAssignment(
                 role="solution_architect",
                 objective="Resolve the blocking evidence without broadening scope.\n" + problems,
                 acceptance_criteria=["Blocking evidence is resolved", "Targeted checks pass", "No unrelated changes"],
+                effort="small",
+                max_iterations=3,
+                budget_usd=0.12,
             )
         ]
+
+    available = max(0.0, remaining_budget(run_budget) - 0.08)
+    bounded: list[RepairAssignment] = []
+    for assignment in repair_plan.assignments:
+        if available < 0.05:
+            break
+        assignment.max_iterations = max(2, min(assignment.max_iterations, 5))
+        assignment.budget_usd = max(0.03, min(assignment.budget_usd, 0.30, available))
+        bounded.append(assignment)
+        available -= assignment.budget_usd
+    repair_plan.assignments = bounded
     return repair_plan
 
 
-def execute_repair_plan(repair_plan: RepairPlan, round_no: int, spec: str, advice: str, event_log: list[dict]) -> None:
+def execute_repair_plan(
+    repair_plan: RepairPlan,
+    round_no: int,
+    spec: str,
+    master: str,
+    advice: str,
+    handoffs: list[str],
+    run_budget: float,
+    event_log: list[dict],
+) -> bool:
     seen: set[str] = set()
+    changed_any = False
     for index, assignment in enumerate(repair_plan.assignments, start=1):
         if assignment.role in seen:
             continue
         seen.add(assignment.role)
+        if not enforce_budget(run_budget, f"repair {round_no}/{assignment.role}", optional=False):
+            break
         EMITTER.emit(
             "handoff",
             f"Repair #{round_no} → {_role_title(assignment.role)}: {assignment.objective}",
             agent="Controller",
             status="done",
             phase="repair",
-            details={"repair_round": round_no, "to": assignment.role, "assignment": index},
+            details={
+                "repair_round": round_no,
+                "to": assignment.role,
+                "assignment": index,
+                "effort": assignment.effort,
+                "max_iterations": assignment.max_iterations,
+                "budget_usd": assignment.budget_usd,
+            },
         )
         item = WorkItem(
             id=f"repair-{round_no}-{index}",
@@ -661,16 +710,26 @@ def execute_repair_plan(repair_plan: RepairPlan, round_no: int, spec: str, advic
                 "Targeted checks pass",
                 "No unrelated changes",
             ],
+            effort=assignment.effort,
+            max_iterations=assignment.max_iterations,
+            budget_usd=assignment.budget_usd,
         )
-        summary = execute_work_item(item, spec, advice)
+        before_diff = git_diff(Path(os.environ["AGENT_WORKSPACE"]))
+        summary = execute_work_item(item, spec, master, advice, handoffs, run_budget)
+        after_diff = git_diff(Path(os.environ["AGENT_WORKSPACE"]))
+        changed = after_diff != before_diff
+        changed_any = changed_any or changed
+        handoffs.append(compact_handoff(_role_title(assignment.role), summary))
         event_log.append(
             {
                 "stage": "repair",
                 "round": round_no,
                 "role": assignment.role,
+                "changed": changed,
                 "summary": summary[-6000:],
             }
         )
+    return changed_any
 
 
 def execute_work_item(
