@@ -989,42 +989,96 @@ Do not redesign the whole solution. Do not write code. Be concise and surface on
             team_handoffs.append(compact_handoff(_role_title(fallback.role), summary))
             completed.append(item.id)
 
-    max_repairs = int(os.environ.get("MAX_REPAIR_ROUNDS", "4"))
+    max_repairs = min(int(os.environ.get("MAX_REPAIR_ROUNDS", "3")), 3)
     allowed_checks: set[str] = {"full_test", "diff_check", "python_compile", "account_focus"}
     checks = [check for check in dict.fromkeys([*plan.mandatory_checks, "full_test", "diff_check"]) if check in allowed_checks]
     final_review = None
     final_checks: dict[str, dict] = {}
+    stop_reason = "not_completed"
+    last_failure_signature: str | None = None
 
     for round_no in range(max_repairs + 1):
+        if round_no > 0 and remaining_budget(run_budget) < 0.08:
+            final_review = ReviewDecision(
+                approved=False,
+                disposition="block",
+                summary="Stopped because the remaining run budget is too small for another safe repair/review cycle.",
+                blocking_issues=["Run cost budget exhausted before convergence."],
+                suggestions=[],
+                needs_owner=False,
+                repair_role="solution_architect",
+            )
+            stop_reason = "budget_exhausted"
+            break
+
         final_checks = collect_validation_results(checks, spec, work)
         diff = git_diff(work)
         checks_green = all(v["returncode"] == 0 for v in final_checks.values())
 
         if not checks_green:
-            failed = "\n\n".join(
-                f"{name}: returncode {result['returncode']}\n{result['output'][-6000:]}"
+            failed_items = {
+                name: {
+                    "returncode": result["returncode"],
+                    "tail": result["output"][-1800:],
+                }
                 for name, result in final_checks.items()
                 if result["returncode"] != 0
+            }
+            failed = "\n\n".join(
+                f"{name}: returncode {result['returncode']}\n{result['tail']}"
+                for name, result in failed_items.items()
             )
+            signature = json.dumps(failed_items, sort_keys=True)
             event_log.append({"stage": "validation_failed", "round": round_no, "checks": final_checks})
-            if round_no >= max_repairs:
+
+            if signature == last_failure_signature:
                 final_review = ReviewDecision(
                     approved=False,
-                    summary="Deterministic validation still fails after the repair budget.",
-                    blocking_issues=[
-                        f"{name}: returncode {result['returncode']}"
-                        for name, result in final_checks.items()
-                        if result["returncode"] != 0
-                    ],
+                    disposition="block",
+                    summary="Stopped because the same deterministic failures persisted after a repair cycle.",
+                    blocking_issues=list(failed_items),
+                    suggestions=[],
+                    needs_owner=False,
                     repair_role="solution_architect",
                 )
+                stop_reason = "stalled_same_failure"
+                break
+            last_failure_signature = signature
+
+            if round_no >= max_repairs or remaining_budget(run_budget) < 0.16:
+                final_review = ReviewDecision(
+                    approved=False,
+                    disposition="block",
+                    summary="Deterministic validation still fails and the bounded repair budget is exhausted.",
+                    blocking_issues=list(failed_items),
+                    suggestions=[],
+                    needs_owner=False,
+                    repair_role="solution_architect",
+                )
+                stop_reason = "repair_budget_exhausted"
                 break
 
-            repair_plan = coordinate_repairs(
-                spec,
-                "DETERMINISTIC VALIDATION FAILURES:\n" + failed,
-                diff,
-            )
+            try:
+                repair_plan = coordinate_repairs(
+                    spec,
+                    master,
+                    "DETERMINISTIC VALIDATION FAILURES:\n" + failed,
+                    diff,
+                    run_budget,
+                )
+            except BudgetStop as exc:
+                final_review = ReviewDecision(
+                    approved=False,
+                    disposition="block",
+                    summary=str(exc),
+                    blocking_issues=list(failed_items),
+                    suggestions=[],
+                    needs_owner=False,
+                    repair_role="solution_architect",
+                )
+                stop_reason = "budget_exhausted"
+                break
+
             event_log.append(
                 {
                     "stage": "repair_plan",
@@ -1033,26 +1087,63 @@ Do not redesign the whole solution. Do not write code. Be concise and surface on
                     "data": repair_plan.model_dump(),
                 }
             )
-            before = diff
-            execute_repair_plan(repair_plan, round_no + 1, spec, advice, event_log)
-            after = git_diff(work)
-            if after == before:
+            if not repair_plan.assignments:
+                final_review = ReviewDecision(
+                    approved=False,
+                    disposition="block",
+                    summary="Stopped because no safe repair assignment fits the remaining run budget.",
+                    blocking_issues=list(failed_items),
+                    suggestions=[],
+                    needs_owner=False,
+                    repair_role="solution_architect",
+                )
+                stop_reason = "budget_exhausted"
+                break
+
+            changed = execute_repair_plan(
+                repair_plan,
+                round_no + 1,
+                spec,
+                master,
+                advice,
+                team_handoffs,
+                run_budget,
+                event_log,
+            )
+            if not changed:
                 EMITTER.emit(
                     "repair.stalled",
-                    f"Repair #{round_no + 1}: nessuna modifica prodotta",
+                    f"Repair #{round_no + 1}: nessuna modifica materiale prodotta",
                     agent="Controller",
                     status="blocked",
                     phase="repair",
                     details={"round": round_no + 1, "source": "validation"},
                 )
+                final_review = ReviewDecision(
+                    approved=False,
+                    disposition="block",
+                    summary="Stopped because the repair cycle produced no material change.",
+                    blocking_issues=list(failed_items),
+                    suggestions=[],
+                    needs_owner=False,
+                    repair_role="solution_architect",
+                )
+                stop_reason = "stalled_no_progress"
+                break
             continue
 
-        reviewer = agent_for("qa_release", writable=False)
+        last_failure_signature = None
+        enforce_budget(run_budget, "independent QA review", optional=False)
+        before_review = float(getattr(EMITTER, "total_cost", 0.0) or 0.0)
+        reviewer = agent_for("qa_release", writable=False, max_iter=3)
         final_review = run_single(
             reviewer,
-            f"""Independently review this implementation against the owner specification.
+            f"""Independently review this implementation against the master plan and current owner specification.
 
-OWNER SPECIFICATION:
+GOVERNING MASTER PLAN:
+{master}
+
+CURRENT OWNER SPECIFICATION:
 {spec}
 
 DISPATCH PLAN:
@@ -1065,19 +1156,30 @@ CURRENT DIFF:
 {diff}
 
 Release-review rules:
-- Approve only if the implementation is coherent, the deterministic checks are acceptable, the diff matches the requested scope, no unrelated behavior was changed, and privacy/security boundaries are preserved.
-- Block only on concrete evidence grounded in the owner specification, dispatch acceptance criteria, check results, or inspected diff.
-- Do not invent release gates, manual browser sessions, live deployment checks, production configuration requirements, or external evidence that the owner specification did not explicitly require as a verification step.
-- If responsive/accessibility behavior is explicitly covered by deterministic contract tests and code inspection, do not additionally require unavailable manual iOS/Safari evidence unless the owner specification explicitly names that manual evidence as a hard gate.
+- Return one disposition: approve, approve_with_suggestions, or block.
+- approve: acceptance criteria and safety boundaries are satisfied with no material follow-up.
+- approve_with_suggestions: candidate is safe and complete enough to deliver; suggestions are useful but MUST NOT trigger another repair cycle.
+- block: only for concrete evidence of an unmet acceptance criterion, regression, security/privacy problem, broken required test, or unsafe scope violation.
+- Put improvements that are not release blockers in suggestions, not blocking_issues.
+- Set needs_owner=true only when a genuine product/priority/credential/legal decision cannot be resolved from the master/spec/repository.
+- Do not invent release gates, manual browser sessions, live deployment checks, production configuration requirements, or external evidence not required by the owner specification.
+- If responsive/accessibility behavior is explicitly covered by deterministic contract tests and code inspection, do not additionally require unavailable manual iOS/Safari evidence unless explicitly named as a hard gate.
 - Treat owner-declared existing backend/schema/config contracts as contracts; do not block merely because private production configuration is absent from the public coding workspace.
-- The pull request is intentionally opened by the controller only AFTER approval. Do not require a PR to exist yet.
-- A full_test result with returncode 0 and BASELINE_EQUIVALENT_FAILURE is an authoritative passed non-regression result. Do not rerun full_test to contradict it.
-- Do not block on stylistic preferences when acceptance criteria and safety constraints are satisfied.
-- If blockers exist, make each blocker concrete, file/behavior specific, and fixable from the repository whenever possible.
+- The pull request is intentionally opened only AFTER approval; do not require a PR to exist yet.
+- A full_test result with returncode 0 and BASELINE_EQUIVALENT_FAILURE is an authoritative passed non-regression result.
+- Do not block on stylistic preferences or speculative future enhancements.
+- Be self-critical but proportionate: the goal is a safe, useful increment, not theoretical perfection.
 """,
-            "A structured release decision.",
+            "A structured release decision with disposition, blockers, suggestions and owner-decision flag.",
             ReviewDecision,
         )
+        emit_budget_result("QA, Security and Release Reviewer", 0.12, before_review, run_budget, label="release review")
+
+        if final_review.disposition in {"approve", "approve_with_suggestions"}:
+            final_review.approved = True
+        else:
+            final_review.approved = False
+
         event_log.append({"stage": "review", "round": round_no, "data": final_review.model_dump()})
         EMITTER.emit(
             "review.decision",
@@ -1085,20 +1187,44 @@ Release-review rules:
             agent="QA, Security and Release Reviewer",
             status="approved" if final_review.approved else "blocked",
             phase="qa",
-            details={"round": round_no, "blocking_issues": len(final_review.blocking_issues)},
+            details={
+                "round": round_no,
+                "disposition": final_review.disposition,
+                "blocking_issues": len(final_review.blocking_issues),
+                "suggestions": final_review.suggestions,
+                "needs_owner": final_review.needs_owner,
+            },
         )
 
         if final_review.approved:
+            stop_reason = final_review.disposition
             break
-        if round_no >= max_repairs:
+        if final_review.needs_owner:
+            stop_reason = "owner_decision_required"
+            break
+        if round_no >= max_repairs or remaining_budget(run_budget) < 0.16:
+            stop_reason = "review_repair_budget_exhausted"
             break
 
         problems = "\n".join(final_review.blocking_issues) or final_review.summary
-        repair_plan = coordinate_repairs(
-            spec,
-            "QA REVIEW BLOCKERS:\n" + problems,
-            diff,
-        )
+        review_signature = "\n".join(sorted(final_review.blocking_issues))
+        if review_signature and review_signature == last_failure_signature:
+            stop_reason = "stalled_same_review"
+            break
+        last_failure_signature = review_signature or final_review.summary
+
+        try:
+            repair_plan = coordinate_repairs(
+                spec,
+                master,
+                "QA REVIEW BLOCKERS:\n" + problems,
+                diff,
+                run_budget,
+            )
+        except BudgetStop:
+            stop_reason = "budget_exhausted"
+            break
+
         event_log.append(
             {
                 "stage": "repair_plan",
@@ -1107,20 +1233,33 @@ Release-review rules:
                 "data": repair_plan.model_dump(),
             }
         )
-        before = diff
-        execute_repair_plan(repair_plan, round_no + 1, spec, advice, event_log)
-        after = git_diff(work)
-        if after == before:
+        changed = execute_repair_plan(
+            repair_plan,
+            round_no + 1,
+            spec,
+            master,
+            advice,
+            team_handoffs,
+            run_budget,
+            event_log,
+        )
+        if not changed:
             EMITTER.emit(
                 "repair.stalled",
-                f"Repair #{round_no + 1}: nessuna modifica prodotta",
+                f"Repair #{round_no + 1}: nessuna modifica materiale prodotta",
                 agent="Controller",
                 status="blocked",
                 phase="repair",
                 details={"round": round_no + 1, "source": "qa"},
             )
+            stop_reason = "stalled_no_progress"
+            break
 
-    success = bool(final_review and final_review.approved and all(v["returncode"] == 0 for v in final_checks.values()))
+    success = bool(
+        final_review
+        and final_review.disposition in {"approve", "approve_with_suggestions"}
+        and all(v["returncode"] == 0 for v in final_checks.values())
+    )
     report = {
         "success": success,
         "plan": plan.model_dump(),
