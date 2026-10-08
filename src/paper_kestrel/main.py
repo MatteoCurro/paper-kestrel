@@ -242,6 +242,52 @@ def load_master_context(spec_path: Path, spec: str) -> str:
     return text[:60000]
 
 
+def memory_root(spec_path: Path) -> Path:
+    repo_root = spec_path.parent.parent if spec_path.parent.name == "orders" else spec_path.parent
+    return repo_root / "memory"
+
+
+def load_memory_file(root: Path, filename: str, limit: int = 18000) -> str:
+    path = root / filename
+    if not path.is_file():
+        return f"[memory missing: {filename}]"
+    return path.read_text(encoding="utf-8", errors="replace")[:limit]
+
+
+def load_common_memory(spec_path: Path) -> str:
+    root = memory_root(spec_path)
+    common = load_memory_file(root, "COMMON.md", 22000)
+    decisions = load_memory_file(root, "DECISIONS.md", 12000)
+    return f"COMMON PROJECT MEMORY:\n{common}\n\nDURABLE DECISIONS:\n{decisions}"
+
+
+def resolve_memory_scopes(role: str, explicit: list[str] | None = None) -> list[str]:
+    scopes: list[str] = []
+    for scope in [*(ROLE_MEMORY_DEFAULTS.get(role, [])), *((explicit or []))]:
+        if scope in MEMORY_FILES and scope not in scopes:
+            scopes.append(scope)
+    return scopes
+
+
+def load_domain_memory(spec_path: Path, role: str, explicit: list[str] | None = None) -> str:
+    root = memory_root(spec_path)
+    chunks: list[str] = []
+    for scope in resolve_memory_scopes(role, explicit):
+        chunks.append(f"DOMAIN MEMORY — {scope}:\n{load_memory_file(root, MEMORY_FILES[scope])}")
+    return "\n\n".join(chunks) or "No additional domain memory required."
+
+
+def load_run_memory(spec_path: Path, scopes: list[str]) -> str:
+    root = memory_root(spec_path)
+    chunks = [load_common_memory(spec_path)]
+    seen: set[str] = set()
+    for scope in scopes:
+        if scope in MEMORY_FILES and scope not in seen:
+            seen.add(scope)
+            chunks.append(f"DOMAIN MEMORY — {scope}:\n{load_memory_file(root, MEMORY_FILES[scope])}")
+    return "\n\n".join(chunks)
+
+
 def effective_run_budget(plan: DispatchPlan) -> float:
     soft_cap = float(os.environ.get("MAX_RUN_COST_USD", "1.25"))
     hard_cap = float(os.environ.get("HARD_RUN_COST_USD", "1.50"))
