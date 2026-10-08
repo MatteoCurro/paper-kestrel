@@ -117,9 +117,10 @@ class JarvisEmitter:
         self._token_at = time.monotonic()
         return self._token
 
-    def _post(self, payload: dict[str, Any]) -> None:
+    def _post(self, payload: dict[str, Any]) -> bool:
+        """Return an actual HTTP acknowledgement, not a best-effort assumption."""
         if not self.enabled:
-            return
+            return False
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         for attempt in range(2):
             try:
@@ -130,15 +131,53 @@ class JarvisEmitter:
                     headers={
                         "Authorization": "Bearer " + self._oidc_token(force=attempt > 0),
                         "Content-Type": "application/json",
-                        "User-Agent": "paper-kestrel-jarvis/1",
+                        "User-Agent": "paper-kestrel-jarvis/2",
                     },
                 )
                 with urllib.request.urlopen(req, timeout=5) as response:
                     response.read()
-                return
+                    return 200 <= response.status < 300
             except Exception:
-                if attempt:
-                    return
+                continue
+        return False
+
+    def _outbox_projection(self, event_id: str, item: dict[str, Any]) -> dict[str, Any]:
+        if "github_run_id" in item:
+            return item
+        state = str(item.get("state") or "UNKNOWN")
+        key = str(event_id)
+        finished = state in {"ACCEPTED", "BLOCKED", "FAILED", "CANCELLED"}
+        status = "success" if state == "ACCEPTED" else ("failure" if finished else "in_progress")
+        return {
+            "github_run_id": int(self.run_id),
+            "run_attempt": int(self.attempt or "1"),
+            "status": status,
+            "phase": "transaction",
+            "event_key": key[:250],
+            "event_type": "run.state",
+            "event_status": state.lower(),
+            "message": _brief(f"Transazione: {state} · {key}"),
+            "agent": "Controller",
+            "metadata": {"state": state, "checkpoint": item.get("payload") or {}},
+            "occurred_at": _now(),
+        }
+
+    def flush_outbox(self, limit: int = 25) -> int:
+        """At-least-once Jarvis delivery; ACK commits only after 2xx.
+
+        The server upserts event_key to deduplicate retry after an uncertain ACK.
+        On any network failure we keep the event for the next flush.
+        """
+        store = getattr(self, "run_store", None)
+        if store is None or not self.enabled:
+            return 0
+        delivered = 0
+        for key, item in store.pending_outbox()[:limit]:
+            if not self._post(self._outbox_projection(key, item)):
+                break
+            store.mark_delivered(key)
+            delivered += 1
+        return delivered
 
     def emit(
         self,
@@ -223,8 +262,15 @@ class JarvisEmitter:
         if details and details.get("to"):
             payload["handoff_to"] = str(details["to"])[:160]
 
-        if self.enabled:
-            self._post(payload)
+        store = getattr(self, "run_store", None)
+        if store is not None:
+            event_id = f"{store.run_id}:jarvis:{payload['event_key']}"
+            store.enqueue_event(event_id, payload)
+            self.flush_outbox()
+        elif self.enabled:
+            # No direct HTTP shortcut: a missing transactional ledger cannot
+            # masquerade as guaranteed observability.
+            raise RuntimeError("Jarvis outbox requires an initialized RunStore")
 
 
 EMITTER = JarvisEmitter()
