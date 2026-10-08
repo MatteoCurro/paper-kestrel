@@ -707,6 +707,7 @@ def cli() -> None:
     os.environ["AGENT_WORKSPACE"] = str(work)
     spec_path = Path(args.spec).resolve()
     spec = spec_path.read_text(encoding="utf-8")
+    master = load_master_context(spec_path, spec)
     EMITTER.set_spec(args.spec)
     EMITTER.emit(
         "run.started",
@@ -722,17 +723,27 @@ def cli() -> None:
     report_dir.mkdir(parents=True, exist_ok=True)
     event_log: list[dict] = []
 
-    director = agent_for("delivery_director", writable=False)
+    director = agent_for("delivery_director", writable=False, max_iter=3)
     plan = run_single(
         director,
-        f"""Read this owner-approved technical specification and create the execution plan.
+        f"""Read the governing master plan and the owner-approved current specification, then create the smallest execution plan that advances only the current milestone.
 
+GOVERNING MASTER PLAN:
+{master}
+
+CURRENT OWNER SPECIFICATION:
 {spec}
 
 Rules:
-- Maximum six coding work items.
-- Use the smallest set of specialists necessary.
+- The master plan is authoritative for sequencing, boundaries and stopping points. The current specification may narrow it but must not silently broaden it.
+- Maximum six coding work items, but prefer one to three when enough.
+- Use the smallest set of specialists necessary; do not create work merely to involve every role.
 - Order items so dependencies are implemented first.
+- For every work item assign effort, max_iterations and budget_usd proportionate to the task.
+- Typical guidance: tiny=2 iterations/$0.05-$0.10, small=3-4/$0.10-$0.20, medium=4-5/$0.20-$0.35, large=5-7/$0.35-$0.55.
+- Set optional=true for nice-to-have analysis that may be skipped if budget is tight.
+- Set run_budget_usd to the lowest realistic total budget; normal target is $0.60-$1.00 and complex work should rarely exceed $1.25.
+- Define stop_conditions that tell the controller when the milestone is good enough and further work has low marginal value.
 - Frontend behavior belongs to frontend_lead; responsive/accessibility hardening to frontend_quality.
 - APIs/auth/server integration belong to backend_lead.
 - Transit/provider/data pipeline work belongs to data_platform.
@@ -748,7 +759,8 @@ Rules:
         DispatchPlan,
     )
     plan.work_items = plan.work_items[:6]
-    event_log.append({"stage": "plan", "data": plan.model_dump()})
+    run_budget = effective_run_budget(plan)
+    event_log.append({"stage": "plan", "data": plan.model_dump(), "effective_run_budget_usd": run_budget})
     EMITTER.emit(
         "plan.created",
         f"Piano creato: {len(plan.work_items)} work item · rischio {plan.risk}",
@@ -756,7 +768,13 @@ Rules:
         status="done",
         phase="planning",
         summary=plan.summary,
-        details={"work_items": len(plan.work_items), "risk": plan.risk},
+        details={
+            "work_items": len(plan.work_items),
+            "risk": plan.risk,
+            "run_budget_usd": round(run_budget, 3),
+            "stop_conditions": plan.stop_conditions,
+            "master_alignment": plan.master_alignment,
+        },
     )
 
     advice_parts: list[str] = []
