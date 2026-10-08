@@ -85,3 +85,21 @@ SQLite provides ACID only for its local transactions. GitHub pushes, LLM calls a
 - GitHub Actions `id-token: write`; environment variable `CREW_BUDGET_URL` is the public TSAND Edge URL; `CREW_BUDGET_AUDIENCE=crew-budget-supabase`.
 - An explicit `MILESTONE_KEY` and `MODEL_PRICING_JSON` containing positive per-million input/output rates for the exact configured models. Missing pricing or milestone blocks all paid LLM calls.
 - Never publish `OPENAI_API_KEY` or any Supabase service role key as a public file.
+
+## 2026-10-08 continued — strict TSAND-only, crash recovery and Jarvis outbox
+- Environment restriction confirmed: **NO PRODUCTION DEPLOY, NO MERGE, NO CHANGE TO PRIVATE PRODUCT MAIN**. Supabase authority remains TSAND only.
+- Created dedicated `t-sand` branches in both public workspaces (`winter-opal`, `quiet-spindle`). The **still-blocked** operational GitHub Actions workflow now refuses other PR bases and targets `t-sand`, never `main`.
+- Added `CheckpointJournal` with durable input hashes, explicit STARTED/COMPLETED/UNCERTAIN markers and candidate-diff integrity on replay. A crashed/uncertain LLM or writing operation is **blocked from silent replay**. A finished response may be reused only when its inputs match.
+- Connected checkpointing to every `run_single` kickoff and to work-item boundaries; committed offline tests for simulated crashes, output replay and candidate mismatch.
+- Added Jarvis event enqueue to the local SQLite outbox. `JarvisEmitter` now acknowledges delivered rows **only after HTTP 2xx**; failed/unknown ACKs retain the row. State transitions can be projected to Jarvis. Standalone CLI requires the same initialized run state, and the operational workflow binds its state path.
+- Inspected the exact pinned CrewAI 1.15.23 source: `BaseLLM` wraps calls with bounded rate-limit retries, while the native OpenAI SDK adapter defaults to 2 retries. Set `max_retries=0` for the underlying adapter; the outer CrewAI retry must reenter the guarded wrapper and reserve anew. Added an offline synthetic 429 test.
+- GitHub standard-hosted Actions minutes on PUBLIC repositories are free; this does not make LLM API usage free and does not eliminate artifact-storage charges.
+
+**Still NO-GO for autonomous paid runs**
+1. Require green CI for all new recovery/outbox/retry tests. An incomplete CI run is not evidence of success.
+2. Prove OIDC in a dedicated **no-spend** staging workflow end to end. New feature-branch workflow registration may differ from local tests.
+3. The SQLite file is **runner-local**. Resume across runners requires authenticated checkpoint snapshot/artifact restoration with integrity checks; without that, fail closed. Do not claim cross-run recovery.
+4. Audit token/input bounds against the provider's actual serialized request. Byte counting and a rough context bound are not a formal upper bound on provider billable input. Verify exact model and rates; provider-side token output bounds, caching and retries must be proven.
+5. Make write-role authorization and external Git/PR Saga idempotent across cancelled GitHub jobs, not only within a single SQLite instance.
+6. Jarvis outbox depends on its receiving endpoint's idempotent `event_key`; test actual delivery on TSAND, not production.
+7. This project follows the user's instruction to work **only in TSAND**. No deployment to any production host or product branch is permitted.
