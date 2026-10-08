@@ -33,7 +33,7 @@ jobs:
       TARGET_REPO_B: ${{ secrets.TARGET_REPO_B }}
       MODEL_CORE: ${{ vars.MODEL_CORE || 'openai/gpt-6.1-sol' }}
       MODEL_LIGHT: ${{ vars.MODEL_LIGHT || 'openai/gpt-6-luna' }}
-      MAX_REPAIR_ROUNDS: "2"
+      MAX_REPAIR_ROUNDS: "4"
       MAX_RPM: "30"
       JARVIS_INGEST_URL: "https://xiiexzvuvzsiacbmwras.supabase.co/functions/v1/jarvis-ingest"
       JARVIS_AUDIENCE: "jarvis-supabase"
