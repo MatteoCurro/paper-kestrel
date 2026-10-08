@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sqlite3
 from pathlib import Path
 from typing import Literal
 
@@ -25,6 +26,25 @@ def _resolve(path: str) -> Path:
     if rel == ".github" or rel.startswith(".github/"):
         raise ValueError("Workflow files are outside the coding-agent write surface")
     return target
+
+
+def _assert_write_lease() -> None:
+    """Fail closed unless this tool call belongs to the current exclusive writer."""
+    db_path = os.environ.get("RUN_STATE_DB")
+    run_id = os.environ.get("RUN_STATE_ID")
+    item_id = os.environ.get("ACTIVE_WORK_ITEM")
+    if not all((db_path, run_id, item_id)):
+        raise PermissionError("Write lease context missing")
+    workspace = str(_safe_root())
+    try:
+        with sqlite3.connect(db_path, timeout=10) as db:
+            holder = db.execute(
+                "SELECT run_id,work_item FROM leases WHERE workspace=?", (workspace,)
+            ).fetchone()
+    except sqlite3.Error as exc:
+        raise PermissionError("Write lease cannot be verified") from exc
+    if holder != (run_id, item_id):
+        raise PermissionError("Write lease missing or owned by another work item")
 
 
 class PathInput(BaseModel):
@@ -115,6 +135,7 @@ class WriteFileTool(BaseTool):
     args_schema: type[BaseModel] = WriteInput
 
     def _run(self, path: str, content: str) -> str:
+        _assert_write_lease()
         target = _resolve(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
@@ -133,6 +154,7 @@ class ReplaceInFileTool(BaseTool):
     args_schema: type[BaseModel] = ReplaceInput
 
     def _run(self, path: str, old: str, new: str, count: int = 1) -> str:
+        _assert_write_lease()
         target = _resolve(path)
         if not target.is_file():
             return f"NOT_FOUND: {path}"
