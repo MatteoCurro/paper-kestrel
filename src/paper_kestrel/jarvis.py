@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import time
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -92,6 +93,7 @@ class JarvisEmitter:
         }
         self.total_cost = 0.0
         self.has_usage = False
+        self._lock = threading.Lock()
 
     def set_spec(self, spec_path: str) -> None:
         self.spec_path = spec_path
@@ -157,14 +159,19 @@ class JarvisEmitter:
     ) -> None:
         if not self.enabled:
             return
-        self.sequence += 1
         usage_data = _usage_dict(usage)
         cost = estimate_cost(model, usage_data)
-        if any(usage_data.values()):
-            self.has_usage = True
-        for key in self.totals:
-            self.totals[key] += usage_data.get(key, 0)
-        self.total_cost += cost
+        with self._lock:
+            self.sequence += 1
+            sequence = self.sequence
+            if any(usage_data.values()):
+                self.has_usage = True
+            for key in self.totals:
+                self.totals[key] += usage_data.get(key, 0)
+            self.total_cost += cost
+            totals = dict(self.totals)
+            total_cost = self.total_cost
+            has_usage = self.has_usage
 
         normalized_event_type = event_type.replace(".", "_")
         run_status = status if event_type.startswith("run.") or finished else "in_progress"
@@ -181,7 +188,7 @@ class JarvisEmitter:
             "status": run_status,
             "phase": phase or "implementation",
             "active_agents": active,
-            "event_key": event_key or f"{self.sequence:04d}:{normalized_event_type}",
+            "event_key": event_key or f"{sequence:04d}:{normalized_event_type}",
             "occurred_at": _now(),
             "agent": agent,
             "event_type": normalized_event_type,
@@ -201,13 +208,13 @@ class JarvisEmitter:
             payload["needs_interaction"] = bool(need_owner)
             if need_owner:
                 payload["interaction_reason"] = _brief(summary or message, 800)
-        if self.has_usage:
+        if has_usage:
             payload.update({
-                "input_tokens": self.totals["prompt_tokens"],
-                "cached_tokens": self.totals["cached_prompt_tokens"],
-                "output_tokens": self.totals["completion_tokens"],
-                "reasoning_tokens": self.totals["reasoning_tokens"],
-                "estimated_cost_usd": round(self.total_cost, 6),
+                "input_tokens": totals["prompt_tokens"],
+                "cached_tokens": totals["cached_prompt_tokens"],
+                "output_tokens": totals["completion_tokens"],
+                "reasoning_tokens": totals["reasoning_tokens"],
+                "estimated_cost_usd": round(total_cost, 6),
             })
         if summary is not None:
             payload["summary"] = _brief(summary, 800)
