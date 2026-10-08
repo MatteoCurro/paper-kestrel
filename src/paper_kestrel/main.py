@@ -16,9 +16,11 @@ from pydantic import BaseModel, Field
 
 from .tools import developer_tools, reviewer_tools
 from .jarvis import EMITTER
+from .state import RunStore
 
 
 DeveloperRole = Literal[
+    "product_engineer",
     "frontend_lead",
     "frontend_quality",
     "backend_lead",
@@ -50,6 +52,7 @@ MEMORY_FILES: dict[str, str] = {
 
 ROLE_MEMORY_DEFAULTS: dict[str, list[str]] = {
     "delivery_director": [],
+    "product_engineer": ["engineering", "product_ux"],
     "solution_architect": ["engineering", "infrastructure"],
     "frontend_lead": ["engineering", "product_ux"],
     "frontend_quality": ["engineering", "product_ux"],
@@ -78,13 +81,13 @@ class WorkItem(BaseModel):
 class DispatchPlan(BaseModel):
     summary: str
     risk: Literal["low", "medium", "high"]
-    use_solution_architect: bool = True
+    use_solution_architect: bool = False
     use_product_growth: bool = False
     use_ui_ux: bool = False
     work_items: list[WorkItem]
     mandatory_checks: list[CheckName] = Field(default_factory=lambda: ["full_test", "diff_check"])
     master_alignment: list[str] = Field(default_factory=list)
-    run_budget_usd: float = Field(1.20, ge=0.25, le=2.00)
+    run_budget_usd: float = Field(0.60, ge=0.03, le=0.75)
     stop_conditions: list[str] = Field(default_factory=list)
 
 
@@ -144,6 +147,12 @@ def agent_for(role: str, writable: bool = False, max_iter: int = 4) -> Agent:
             "Protect architectural coherence, dependency boundaries, privacy and deployment safety.",
             "You understand large JavaScript applications, transport-data systems, GitHub Actions and incremental refactoring. "
             "You prevent duplicate abstractions and big-bang rewrites.",
+            CORE(),
+        ),
+        "product_engineer": (
+            "Senior Product Engineer",
+            "Implement the smallest coherent full-stack product change. Own product behavior, code, and focused tests.",
+            "You understand the whole U.Venice product and avoid fragmented responsibilities.",
             CORE(),
         ),
         "frontend_lead": (
@@ -215,6 +224,7 @@ def _jarvis_phase(role: str) -> str:
 
 def _role_title(role: str) -> str:
     return {
+        "product_engineer": "Senior Product Engineer",
         "frontend_lead": "Senior Frontend Engineer",
         "frontend_quality": "Frontend Quality and Accessibility Engineer",
         "backend_lead": "Senior Backend and Integration Engineer",
@@ -230,15 +240,17 @@ class BudgetStop(RuntimeError):
 def load_master_context(spec_path: Path, spec: str) -> str:
     match = re.search(r"(?im)^Master plan:\s*`?([^\n`]+)`?\s*$", spec)
     if not match:
-        return "No separate master plan referenced; follow the owner specification as the governing plan."
+        raise RuntimeError("Missing mandatory Master plan reference in work order")
     raw = match.group(1).strip()
-    repo_root = spec_path.parent.parent if spec_path.parent.name == "orders" else spec_path.parent
-    candidate = (repo_root / raw).resolve()
-    if repo_root not in candidate.parents and candidate != repo_root:
-        return f"Master plan reference rejected because it escapes the orchestrator repository: {raw}"
+    work_root = Path(os.environ.get("AGENT_WORKSPACE", "work")).resolve()
+    candidate = (work_root / raw).resolve()
+    if candidate != work_root and work_root not in candidate.parents:
+        raise RuntimeError(f"Master plan reference escapes product workspace: {raw}")
     if not candidate.is_file():
-        return f"Referenced master plan not found: {raw}"
+        raise RuntimeError(f"Referenced master plan not found in product workspace: {raw}")
     text = candidate.read_text(encoding="utf-8", errors="replace")
+    if not text.strip():
+        raise RuntimeError(f"Master plan is empty: {raw}")
     return text[:60000]
 
 
@@ -289,9 +301,9 @@ def load_run_memory(spec_path: Path, scopes: list[str]) -> str:
 
 
 def effective_run_budget(plan: DispatchPlan) -> float:
-    soft_cap = float(os.environ.get("MAX_RUN_COST_USD", "1.25"))
-    hard_cap = float(os.environ.get("HARD_RUN_COST_USD", "1.50"))
-    return max(0.25, min(plan.run_budget_usd, soft_cap, hard_cap))
+    soft_cap = min(0.75, float(os.environ.get("MAX_RUN_COST_USD", "0.75")))
+    hard_cap = min(0.75, float(os.environ.get("HARD_RUN_COST_USD", "0.75")))
+    return max(0.0, min(plan.run_budget_usd, soft_cap, hard_cap))
 
 
 def remaining_budget(limit: float) -> float:
@@ -831,7 +843,14 @@ def execute_work_item(
     board = "\n".join(f"- {x}" for x in handoffs[-8:]) or "- No prior team handoffs."
     project_memory = load_common_memory(spec_path)
     domain_memory = load_domain_memory(spec_path, item.role, item.memory_scopes)
-    output = run_single(
+    store = getattr(EMITTER, "run_store", None)
+    workspace = str(Path(os.environ["AGENT_WORKSPACE"]).resolve())
+    if store is None:
+        raise RuntimeError("Write operations require a durable RunStore")
+    store.acquire_writer(workspace, item.id)
+    os.environ["ACTIVE_WORK_ITEM"] = item.id
+    try:
+        output = run_single(
         worker,
         f"""GOVERNING MASTER PLAN:
 {master}
@@ -866,7 +885,10 @@ OPERATING CONTRACT:
 - If blocked by a genuine external decision or unavailable credential, stop and state exactly what is needed; do not invent APIs.
 - Finish with a concise handoff: what changed, checks run, residual blockers, and what the next role needs to know.""",
         "Implemented code changes plus a concise team handoff and tests run.",
-    )
+        )
+    finally:
+        os.environ.pop("ACTIVE_WORK_ITEM", None)
+        store.release_writer(workspace, item.id)
     emit_budget_result(_role_title(item.role), item.budget_usd, before, run_budget, label=item.id)
     EMITTER.emit(
         "handoff",
@@ -893,6 +915,13 @@ def cli() -> None:
     master = load_master_context(spec_path, spec)
     common_memory = load_common_memory(spec_path)
     EMITTER.set_spec(args.spec)
+    run_id = os.environ.get("GITHUB_RUN_ID", "local") + ":" + os.environ.get("GITHUB_RUN_ATTEMPT", "1")
+    store = RunStore(Path(args.report_dir) / "run-state.sqlite3", run_id)
+    store.initialize(spec=spec, master=master, cap=0.75, milestone=os.environ.get("MILESTONE_KEY", "unassigned"))
+    EMITTER.run_store = store
+    os.environ["RUN_STATE_DB"] = str(store.path.resolve())
+    os.environ["RUN_STATE_ID"] = store.run_id
+    store.transition("000:preflight", "PREFLIGHT", {"spec_path":str(spec_path)})
     EMITTER.emit(
         "run.started",
         f"Run avviato per {args.spec}",
@@ -923,16 +952,16 @@ PERSISTENT COMMON PROJECT MEMORY:
 
 Rules:
 - The master plan is authoritative for sequencing, boundaries and stopping points. The current specification may narrow it but must not silently broaden it.
-- Maximum six coding work items, but prefer one to three when enough.
+- Maximum three work items, prefer ONE product_engineer writer. Only add specialist work when truly independent.
 - Use the smallest set of specialists necessary; do not create work merely to involve every role.
 - Order items so dependencies are implemented first.
 - For every work item assign effort, max_iterations and budget_usd proportionate to the task.
 - For every work item assign only the memory_scopes materially relevant to that work. Do not load every domain by default.
 - Typical guidance: tiny=2 iterations/$0.05-$0.10, small=3-4/$0.10-$0.20, medium=4-5/$0.20-$0.35, large=5-7/$0.35-$0.55.
 - Set optional=true for nice-to-have analysis that may be skipped if budget is tight.
-- Set run_budget_usd to the lowest realistic total budget; normal target is $0.60-$1.00 and complex work should rarely exceed $1.25.
+- Set run_budget_usd to the lowest realistic total budget; never exceed $0.75 without a separate owner authorization.
 - Define stop_conditions that tell the controller when the milestone is good enough and further work has low marginal value.
-- Frontend behavior belongs to frontend_lead; responsive/accessibility hardening to frontend_quality.
+- Frontend, backend and normal product implementation belong to product_engineer. Other coding roles are exceptional.
 - APIs/auth/server integration belong to backend_lead.
 - Transit/provider/data pipeline work belongs to data_platform.
 - Cross-cutting architecture or ambiguous ownership belongs to solution_architect.
@@ -946,9 +975,10 @@ Rules:
         "A structured dispatch plan with ordered work items and mandatory checks.",
         DispatchPlan,
     )
-    plan.work_items = plan.work_items[:6]
+    plan.work_items = plan.work_items[:3]
     run_budget = effective_run_budget(plan)
     event_log.append({"stage": "plan", "data": plan.model_dump(), "effective_run_budget_usd": run_budget})
+    store.transition("010:plan", "PLANNED", {"work_items": [i.id for i in plan.work_items], "budget": run_budget})
     EMITTER.emit(
         "plan.created",
         f"Piano creato: {len(plan.work_items)} work item · rischio {plan.risk}",
@@ -1024,7 +1054,7 @@ Do not redesign the whole solution. Do not write code. Be concise and surface on
 
     advice_parts: list[str] = []
     if advisor_specs:
-        with ThreadPoolExecutor(max_workers=min(3, len(advisor_specs))) as pool:
+        with ThreadPoolExecutor(max_workers=min(2, len(advisor_specs))) as pool:
             futures = {
                 pool.submit(run_advisor, role, instruction, cost): role
                 for role, instruction, cost in advisor_specs
@@ -1071,26 +1101,14 @@ Do not redesign the whole solution. Do not write code. Be concise and surface on
                 details={"work_item": item.id},
             )
             completed.append(item.id)
+            store.transition("work:" + item.id, "EXECUTING", {"completed": item.id})
         except BudgetStop:
             raise
         except Exception as exc:
             event_log.append({"stage": "blocked", "item": item.id, "role": item.role, "error": str(exc)})
-            fallback = WorkItem(
-                id=item.id + "-fallback",
-                role="solution_architect",
-                objective=f"Unblock and complete this failed work item: {item.objective}. Failure: {exc}",
-                acceptance_criteria=item.acceptance_criteria,
-                files_hint=item.files_hint,
-                effort="small",
-                max_iterations=3,
-                budget_usd=min(0.15, max(0.05, remaining_budget(run_budget) - 0.10)),
-            )
-            summary = execute_work_item(fallback, spec_path, spec, master, advice, team_handoffs, run_budget)
-            event_log.append({"stage": "fallback", "item": fallback.id, "role": fallback.role, "summary": summary[-6000:]})
-            team_handoffs.append(compact_handoff(_role_title(fallback.role), summary))
-            completed.append(item.id)
+            raise RuntimeError(f"Work item {item.id} failed; no automatic architect fallback") from exc
 
-    max_repairs = min(int(os.environ.get("MAX_REPAIR_ROUNDS", "3")), 3)
+    max_repairs = min(int(os.environ.get("MAX_REPAIR_ROUNDS", "1")), 1)
     allowed_checks: set[str] = {"full_test", "diff_check", "python_compile", "account_focus"}
     checks = [check for check in dict.fromkeys([*plan.mandatory_checks, "full_test", "diff_check"]) if check in allowed_checks]
     final_review = None
@@ -1113,6 +1131,8 @@ Do not redesign the whole solution. Do not write code. Be concise and surface on
             break
 
         final_checks = collect_validation_results(checks, spec, work)
+        store.transition("validation:" + str(round_no), "VALIDATING",
+                         {"checks": {k: v["returncode"] for k,v in final_checks.items()}})
         diff = git_diff(work)
         checks_green = all(v["returncode"] == 0 for v in final_checks.values())
 
@@ -1347,6 +1367,7 @@ Release-review rules:
         changed = execute_repair_plan(
             repair_plan,
             round_no + 1,
+            spec_path,
             spec,
             master,
             advice,
@@ -1382,6 +1403,7 @@ Release-review rules:
         "review": final_review.model_dump() if final_review else None,
         "events": event_log,
     }
+    store.transition("900:finish", "ACCEPTED" if success else "BLOCKED", {"reason": stop_reason})
     (report_dir / "agent-report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     suggestions_md = ""
     if final_review and final_review.suggestions:
