@@ -1260,20 +1260,30 @@ Release-review rules:
         and final_review.disposition in {"approve", "approve_with_suggestions"}
         and all(v["returncode"] == 0 for v in final_checks.values())
     )
+    actual_cost = float(getattr(EMITTER, "total_cost", 0.0) or 0.0)
     report = {
         "success": success,
+        "stop_reason": stop_reason,
+        "planned_run_budget_usd": run_budget,
+        "actual_cost_usd": round(actual_cost, 6),
         "plan": plan.model_dump(),
         "checks": final_checks,
         "review": final_review.model_dump() if final_review else None,
         "events": event_log,
     }
     (report_dir / "agent-report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    suggestions_md = ""
+    if final_review and final_review.suggestions:
+        suggestions_md = "\n\nSuggestions (non-blocking):\n" + "\n".join(f"- {x}" for x in final_review.suggestions)
     (report_dir / "agent-report.md").write_text(
         "# Automation report\n\n"
         + f"Success: **{success}**\n\n"
+        + f"Stop reason: **{stop_reason}**\n\n"
+        + f"Budget: **USD {run_budget:.3f} planned / USD {actual_cost:.3f} actual**\n\n"
         + f"Plan: {plan.summary}\n\n"
         + "Review: "
         + (final_review.summary if final_review else "not completed")
+        + suggestions_md
         + "\n",
         encoding="utf-8",
     )
@@ -1292,8 +1302,8 @@ Release-review rules:
             final_review.summary if final_review else "Run non approvato",
             status="failure",
             phase="qa",
-            need_owner=True,
-            summary=final_review.summary if final_review else "Run non approvato",
+            need_owner=bool(final_review.needs_owner) if final_review else False,
+            summary=(final_review.summary if final_review else "Run non approvato") + f" · stop={stop_reason}",
             finished=True,
             event_key="run:failed",
         )
@@ -1305,6 +1315,19 @@ if __name__ == "__main__":
         cli()
     except SystemExit:
         raise
+    except BudgetStop as exc:
+        EMITTER.emit(
+            "run.stopped",
+            str(exc),
+            status="failure",
+            phase="planning",
+            need_owner=False,
+            summary=str(exc),
+            finished=True,
+            event_key="run:budget-stop",
+        )
+        print(str(exc))
+        raise SystemExit(4)
     except Exception as exc:
         EMITTER.emit(
             "run.failed",
