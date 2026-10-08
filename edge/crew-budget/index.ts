@@ -44,11 +44,13 @@ Deno.serve(async (request: Request) => {
         !Number.isSafeInteger(numericAttempt) || numericAttempt <= 0) {
       return respond({ error: "invalid run identity" }, 403);
     }
-    const runId = String(numericRun) + ":" + String(numericAttempt);
+    // The *same GitHub run* shares one cap across all workflow retry attempts.
+    const runId = String(numericRun);
+    const reservationPrefix = runId + ":" + String(numericAttempt) + ":";
     const body = await request.json();
     if (body?.action !== "reserve" || !validIdentifier(body?.milestone) ||
         !validIdentifier(body?.reservation_id) ||
-        !body.reservation_id.startsWith(runId + ":")) {
+        !body.reservation_id.startsWith(reservationPrefix)) {
       return respond({ error: "invalid budget request" }, 400);
     }
     const amountText = body.amount_usd;
