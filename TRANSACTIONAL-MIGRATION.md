@@ -59,3 +59,29 @@ SQLite provides ACID only for its local transactions. GitHub pushes, LLM calls a
 - The budget module is NOT YET wired at the actual provider transport boundary. CrewAI can internally make multiple inference calls; guarding only crew.kickoff() would not satisfy the policy.
 - Remaining release blockers: provider call interception + enforced input/output and tool-roundtrip bounds; cross-run milestone atomic authority; recovery; outbox-only telemetry; integration testing. Do not enable paid runs.
 - No offline CI test results are claimed until the workflow actually reports success.
+
+## 2026-10-08: central budget authority (public repo + Supabase TSAND)
+**Implemented**
+- `src/paper_kestrel/budget_llm.py` wraps the concrete CrewAI adapter behind `BaseLLM` to prevent provider-factory bypass. Every synchronous/asynchronous LLM call attempts both local and remote pre-admission before invoking its transport.
+- `src/paper_kestrel/budget_gateway.py` uses short-lived GitHub Actions OIDC; **no static Supabase key is stored in GitHub**. The budget endpoint validates audience `crew-budget-supabase`, issuer, repository, workflow, allowed refs and numeric run identity.
+- `sql/crew-budget-authority.sql` was installed on the **TSAND** Supabase project, with private schema `crew_budget`, row locking and hard ceilings of $0.75 per GitHub run ID and $1.50 per milestone.
+- `edge/crew-budget/index.ts` was deployed to TSAND as edge function `crew-budget`. The run cap persists across retry attempts under the same GitHub run ID; reservation keys include attempt numbers.
+- SQL tests were executed in a rolled-back transaction for duplicate reservation, over-run denial and over-milestone denial; the follow-up metadata query confirmed no test rows persisted and that `anon` cannot execute the reservation RPC.
+- No real LLM workflow has been launched. The paid workflow's unconditional fail-closed gate is still first in the job.
+
+**Observed CI and corrective action**
+- The first GitHub Actions offline run (ID `37828971373`) passed Python syntax and dependency installation; 20 of 22 tests passed, 2 failed because tests mocked `crewai.LLM` while the library selected a different native provider class, causing a 401 with a fake test API key. No valid user API key was provided.
+- Follow-up changes mock the concrete inner adapter and globally forbid network sockets during offline provider tests. The revised suite must be rerun before claiming a green result.
+
+**Release blockers (NO-GO)**
+1. Obtain passing offline CI **including** mocked denial and retry cases.
+2. Confirm all provider retries and token ceilings are included in authorized exposure; CrewAI adapter internals can retry, so the current per-wrapper-call budget guarantee is not yet independently proven end to end.
+3. Validate end-to-end OIDC authorization from public GitHub Actions to TSAND *without* making an LLM call.
+4. Meter and reconcile actual usage safely, including unknown costs and interrupted calls; until verified, retain the whole conservative reservation instead of undercounting spending.
+5. Finish durable run recovery, deterministic Saga/PR compensation, Jarvis outbox-only delivery and UX critic loop.
+6. Keep legacy main workflow and new feature-branch workflow risks separate. Do not merge an unverified migration into main.
+
+**Settings required for future gated runs**
+- GitHub Actions `id-token: write`; environment variable `CREW_BUDGET_URL` is the public TSAND Edge URL; `CREW_BUDGET_AUDIENCE=crew-budget-supabase`.
+- An explicit `MILESTONE_KEY` and `MODEL_PRICING_JSON` containing positive per-million input/output rates for the exact configured models. Missing pricing or milestone blocks all paid LLM calls.
+- Never publish `OPENAI_API_KEY` or any Supabase service role key as a public file.
