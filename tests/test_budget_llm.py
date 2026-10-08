@@ -24,6 +24,7 @@ class GuardedLLMTests(unittest.TestCase):
             "MAX_RUN_COST_USD": "0.75",
             "HARD_RUN_COST_USD": "0.75",
             "MAX_LLM_INPUT_BYTES": "10000",
+            "OPENAI_API_KEY": "offline-mock-never-used",
         })
         self.env.start()
 
@@ -41,15 +42,27 @@ class GuardedLLMTests(unittest.TestCase):
             pending = self.store.db.execute("SELECT COUNT(*) FROM reservations").fetchone()[0]
             self.assertEqual(pending, 1)
             return "model-output"
-        with patch.object(LLM, "call", fake_transport):
-            self.assertEqual(llm.call("hello"), "model-output")
+        with patch("paper_kestrel.budget_llm.reserve_remote", side_effect=lambda **k: None) as remote:
+            with patch.object(LLM, "call", fake_transport):
+                self.assertEqual(llm.call("hello"), "model-output")
+            remote.assert_called_once()
 
     def test_repeated_calls_reserve_separately(self):
         llm = self.llm()
-        with patch.object(LLM, "call", lambda *_a, **_kw: "ok"):
-            llm.call("one")
-            llm.call("two")
+        with patch("paper_kestrel.budget_llm.reserve_remote"):
+            with patch.object(LLM, "call", lambda *_a, **_kw: "ok"):
+                llm.call("one")
+                llm.call("two")
         self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM reservations").fetchone()[0], 2)
+
+    def test_remote_denial_prevents_provider(self):
+        llm = self.llm()
+        with patch("paper_kestrel.budget_llm.reserve_remote",
+                   side_effect=BudgetAdmissionError("remote offline")):
+            with patch.object(LLM, "call", side_effect=AssertionError("provider called")):
+                with self.assertRaises(BudgetAdmissionError):
+                    llm.call("hello")
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM reservations").fetchone()[0],1)
 
     def test_unpriced_model_never_calls_provider(self):
         llm = self.llm()
