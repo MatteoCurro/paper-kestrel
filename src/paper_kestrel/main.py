@@ -59,10 +59,11 @@ class DispatchPlan(BaseModel):
 
 class ReviewDecision(BaseModel):
     approved: bool
-    disposition: ReviewDisposition = "block"
+    disposition: ReviewDisposition
     summary: str
     blocking_issues: list[str] = Field(default_factory=list)
     suggestions: list[str] = Field(default_factory=list)
+    needs_owner: bool = False
     repair_role: DeveloperRole = "solution_architect"
 
 
