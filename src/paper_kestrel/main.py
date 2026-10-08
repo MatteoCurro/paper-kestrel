@@ -733,53 +733,63 @@ Rules:
             event_log.append({"stage": "fallback", "item": fallback.id, "role": fallback.role, "summary": summary[-6000:]})
             completed.append(item.id)
 
-    max_repairs = int(os.environ.get("MAX_REPAIR_ROUNDS", "2"))
+    max_repairs = int(os.environ.get("MAX_REPAIR_ROUNDS", "4"))
     allowed_checks: set[str] = {"full_test", "diff_check", "python_compile", "account_focus"}
     checks = [check for check in dict.fromkeys([*plan.mandatory_checks, "full_test", "diff_check"]) if check in allowed_checks]
     final_review = None
     final_checks: dict[str, dict] = {}
 
     for round_no in range(max_repairs + 1):
-        final_checks = {}
-        for check in checks:
-            EMITTER.emit(
-                "check.started",
-                f"{check}: controllo in corso",
-                agent="Controller",
-                status="checking",
-                phase="testing",
-                details={"check": check},
-            )
-            rc, out = run_check(check, work)
-            final_checks[check] = {"returncode": rc, "output": out[-12000:]}
-            EMITTER.emit(
-                "check.completed",
-                f"{check}: {'ok' if rc == 0 else 'fallito'}",
-                agent="Controller",
-                status="success" if rc == 0 else "failed",
-                phase="testing",
-                details={"check": check, "returncode": rc},
-            )
-        for test_path in changed_js_tests(work):
-            EMITTER.emit(
-                "check.started",
-                f"{test_path}: test mirato in corso",
-                agent="Controller",
-                status="checking",
-                phase="testing",
-                details={"check": "changed_js_test", "path": test_path},
-            )
-            rc, out = run_changed_js_test(test_path, work)
-            final_checks[f"changed_js_test:{test_path}"] = {"returncode": rc, "output": out[-12000:]}
-            EMITTER.emit(
-                "check.completed",
-                f"{test_path}: {'ok' if rc == 0 else 'fallito'}",
-                agent="Controller",
-                status="success" if rc == 0 else "failed",
-                phase="testing",
-                details={"check": "changed_js_test", "path": test_path, "returncode": rc},
-            )
+        final_checks = collect_validation_results(checks, spec, work)
         diff = git_diff(work)
+        checks_green = all(v["returncode"] == 0 for v in final_checks.values())
+
+        if not checks_green:
+            failed = "\n\n".join(
+                f"{name}: returncode {result['returncode']}\n{result['output'][-6000:]}"
+                for name, result in final_checks.items()
+                if result["returncode"] != 0
+            )
+            event_log.append({"stage": "validation_failed", "round": round_no, "checks": final_checks})
+            if round_no >= max_repairs:
+                final_review = ReviewDecision(
+                    approved=False,
+                    summary="Deterministic validation still fails after the repair budget.",
+                    blocking_issues=[
+                        f"{name}: returncode {result['returncode']}"
+                        for name, result in final_checks.items()
+                        if result["returncode"] != 0
+                    ],
+                    repair_role="solution_architect",
+                )
+                break
+
+            repair_plan = coordinate_repairs(
+                spec,
+                "DETERMINISTIC VALIDATION FAILURES:\n" + failed,
+                diff,
+            )
+            event_log.append(
+                {
+                    "stage": "repair_plan",
+                    "round": round_no + 1,
+                    "source": "validation",
+                    "data": repair_plan.model_dump(),
+                }
+            )
+            before = diff
+            execute_repair_plan(repair_plan, round_no + 1, spec, advice, event_log)
+            after = git_diff(work)
+            if after == before:
+                EMITTER.emit(
+                    "repair.stalled",
+                    f"Repair #{round_no + 1}: nessuna modifica prodotta",
+                    agent="Controller",
+                    status="blocked",
+                    phase="repair",
+                    details={"round": round_no + 1, "source": "validation"},
+                )
+            continue
 
         reviewer = agent_for("qa_release", writable=False)
         final_review = run_single(
@@ -798,11 +808,17 @@ CHECK RESULTS:
 CURRENT DIFF:
 {diff}
 
-Approve only if the implementation is coherent, tests are acceptable, the diff matches the requested scope, no unrelated behavior was changed, and privacy/security/deployment boundaries are preserved.
-The pull request is intentionally opened by the controller only AFTER your approval. Do not require a PR to exist yet and do not block approval because delivery has not happened.
-A full_test result with returncode 0 and the marker BASELINE_EQUIVALENT_FAILURE means the candidate and unchanged baseline failed identically in the deliberately incomplete public validation workspace; treat that as a passed non-regression check.
-When that marker is present, do not override it by rerunning full_test independently: the controller's baseline comparison is the authoritative non-regression result. You may still run targeted checks on changed files.
-If blocking issues exist, list them concretely and choose the specialist role best suited to repair them.""",
+Release-review rules:
+- Approve only if the implementation is coherent, the deterministic checks are acceptable, the diff matches the requested scope, no unrelated behavior was changed, and privacy/security boundaries are preserved.
+- Block only on concrete evidence grounded in the owner specification, dispatch acceptance criteria, check results, or inspected diff.
+- Do not invent release gates, manual browser sessions, live deployment checks, production configuration requirements, or external evidence that the owner specification did not explicitly require as a verification step.
+- If responsive/accessibility behavior is explicitly covered by deterministic contract tests and code inspection, do not additionally require unavailable manual iOS/Safari evidence unless the owner specification explicitly names that manual evidence as a hard gate.
+- Treat owner-declared existing backend/schema/config contracts as contracts; do not block merely because private production configuration is absent from the public coding workspace.
+- The pull request is intentionally opened by the controller only AFTER approval. Do not require a PR to exist yet.
+- A full_test result with returncode 0 and BASELINE_EQUIVALENT_FAILURE is an authoritative passed non-regression result. Do not rerun full_test to contradict it.
+- Do not block on stylistic preferences when acceptance criteria and safety constraints are satisfied.
+- If blockers exist, make each blocker concrete, file/behavior specific, and fixable from the repository whenever possible.
+""",
             "A structured release decision.",
             ReviewDecision,
         )
@@ -816,31 +832,37 @@ If blocking issues exist, list them concretely and choose the specialist role be
             details={"round": round_no, "blocking_issues": len(final_review.blocking_issues)},
         )
 
-        checks_green = all(v["returncode"] == 0 for v in final_checks.values())
-        if final_review.approved and checks_green:
+        if final_review.approved:
             break
         if round_no >= max_repairs:
             break
 
-        problems = "\n".join(final_review.blocking_issues) or "\n".join(
-            f"{k}: returncode {v['returncode']}" for k, v in final_checks.items() if v["returncode"] != 0
+        problems = "\n".join(final_review.blocking_issues) or final_review.summary
+        repair_plan = coordinate_repairs(
+            spec,
+            "QA REVIEW BLOCKERS:\n" + problems,
+            diff,
         )
-        EMITTER.emit(
-            "handoff",
-            f"QA → {_role_title(final_review.repair_role)}: repair #{round_no + 1}",
-            agent="QA, Security and Release Reviewer",
-            status="done",
-            phase="qa",
-            details={"repair_round": round_no + 1, "to": final_review.repair_role},
+        event_log.append(
+            {
+                "stage": "repair_plan",
+                "round": round_no + 1,
+                "source": "qa",
+                "data": repair_plan.model_dump(),
+            }
         )
-        repair = WorkItem(
-            id=f"repair-{round_no + 1}",
-            role=final_review.repair_role,
-            objective="Repair the blocking review/test failures without broadening scope.\n" + problems,
-            acceptance_criteria=["All mandatory checks pass", "Reviewer blockers are resolved", "No unrelated changes"],
-        )
-        summary = execute_work_item(repair, spec, advice)
-        event_log.append({"stage": "repair", "round": round_no + 1, "role": repair.role, "summary": summary[-6000:]})
+        before = diff
+        execute_repair_plan(repair_plan, round_no + 1, spec, advice, event_log)
+        after = git_diff(work)
+        if after == before:
+            EMITTER.emit(
+                "repair.stalled",
+                f"Repair #{round_no + 1}: nessuna modifica prodotta",
+                agent="Controller",
+                status="blocked",
+                phase="repair",
+                details={"round": round_no + 1, "source": "qa"},
+            )
 
     success = bool(final_review and final_review.approved and all(v["returncode"] == 0 for v in final_checks.values()))
     report = {
