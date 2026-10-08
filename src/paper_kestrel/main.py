@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from .tools import developer_tools, reviewer_tools
 from .jarvis import EMITTER
 from .state import RunStore
+from .budget_llm import BudgetedLLM
 
 
 DeveloperRole = Literal[
@@ -116,9 +117,9 @@ class RepairPlan(BaseModel):
     assignments: list[RepairAssignment] = Field(default_factory=list)
 
 
-def model(name: str, fallback: str, max_tokens: int = 12000) -> LLM:
+def model(name: str, fallback: str, max_tokens: int = 2048) -> LLM:
     effort = "medium" if name == "MODEL_CORE" else "low"
-    return LLM(
+    return BudgetedLLM(
         model=os.environ.get(name, fallback),
         api="responses",
         timeout=300,
@@ -128,7 +129,7 @@ def model(name: str, fallback: str, max_tokens: int = 12000) -> LLM:
 
 
 CORE = lambda: model("MODEL_CORE", "openai/gpt-6.1-sol")
-LIGHT = lambda: model("MODEL_LIGHT", "openai/gpt-6-luna", 8000)
+LIGHT = lambda: model("MODEL_LIGHT", "openai/gpt-6-luna", 1536)
 
 
 def agent_for(role: str, writable: bool = False, max_iter: int = 4) -> Agent:
@@ -916,8 +917,11 @@ def cli() -> None:
     common_memory = load_common_memory(spec_path)
     EMITTER.set_spec(args.spec)
     run_id = os.environ.get("GITHUB_RUN_ID", "local") + ":" + os.environ.get("GITHUB_RUN_ATTEMPT", "1")
+    milestone = os.environ.get("MILESTONE_KEY", "").strip()
+    if not milestone:
+        raise RuntimeError("MILESTONE_KEY missing: no autonomous LLM work permitted")
     store = RunStore(Path(args.report_dir) / "run-state.sqlite3", run_id)
-    store.initialize(spec=spec, master=master, cap=0.75, milestone=os.environ.get("MILESTONE_KEY", "unassigned"))
+    store.initialize(spec=spec, master=master, cap=0.75, milestone=milestone)
     EMITTER.run_store = store
     os.environ["RUN_STATE_DB"] = str(store.path.resolve())
     os.environ["RUN_STATE_ID"] = store.run_id
