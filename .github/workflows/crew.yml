@@ -1,4 +1,3 @@
-# Registered maintenance workflow
 name: Maintenance pass
 
 on:
@@ -8,11 +7,6 @@ on:
         description: "Specification file committed under orders/"
         required: true
         default: "orders/current.md"
-  push:
-    branches:
-      - main
-    paths:
-      - "orders/current.md"
 
 permissions:
   contents: read
@@ -33,10 +27,10 @@ jobs:
       TARGET_REPO_B: ${{ secrets.TARGET_REPO_B }}
       MODEL_CORE: ${{ vars.MODEL_CORE || 'openai/gpt-6.1-sol' }}
       MODEL_LIGHT: ${{ vars.MODEL_LIGHT || 'openai/gpt-6-luna' }}
-      MAX_REPAIR_ROUNDS: "3"
+      MAX_REPAIR_ROUNDS: "1"
       MAX_RPM: "30"
-      MAX_RUN_COST_USD: "1.25"
-      HARD_RUN_COST_USD: "1.50"
+      MAX_RUN_COST_USD: "0.75"
+      HARD_RUN_COST_USD: "0.75"
       JARVIS_INGEST_URL: "https://xiiexzvuvzsiacbmwras.supabase.co/functions/v1/jarvis-ingest"
       JARVIS_AUDIENCE: "jarvis-supabase"
       JARVIS_SPEC_PATH: ${{ github.event_name == 'workflow_dispatch' && inputs.spec_path || 'orders/current.md' }}
@@ -46,6 +40,13 @@ jobs:
         with:
           ref: main
           fetch-depth: 1
+
+      - name: Migration safety gate (non-bypassable)
+        shell: bash
+        run: |
+          echo "CrewAI V2 is not approved for paid or repository-mutating execution."
+          echo "Run the offline tests via the dedicated CI-only workflow."
+          exit 78
 
       - name: Validate configuration
         shell: bash
@@ -74,6 +75,9 @@ jobs:
 
       - name: Validate orchestrator syntax
         run: python -m py_compile src/paper_kestrel/*.py
+
+      - name: Test transactional state (offline)
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
 
       - name: Clone split workspaces
         shell: bash
