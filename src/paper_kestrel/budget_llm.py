@@ -17,7 +17,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-from crewai import LLM
+from crewai import BaseLLM, LLM
 
 from .budget import BudgetAdmissionError, CallBound, ModelRate, reserve_before_transport
 from .budget_gateway import reserve_remote
@@ -43,11 +43,10 @@ def configured_rates() -> dict[str, ModelRate]:
         raise BudgetAdmissionError("MODEL_PRICING_JSON is invalid") from exc
 
 
-class BudgetedLLM(LLM):
-    """A strictly guarded CrewAI LLM; no permit, no provider call.
-
-    Subclassing the real CrewAI transport guards every executor iteration,
-    including tool-call follow-ups, rather than just Crew.kickoff().
+class BudgetedLLM(BaseLLM):
+    """A strict BaseLLM proxy. CrewAI cannot replace this wrapper with a native
+    provider in LLM.__new__ (which could bypass a subclass override).
+    Each agent iteration enters call/acall and obtains a remote permit.
     """
 
     def __init__(self, *args: Any, **kwargs: Any):
@@ -56,11 +55,36 @@ class BudgetedLLM(LLM):
         output_limit = int(kwargs.get("max_completion_tokens") or 0)
         if output_limit <= 0 or output_limit > 4096:
             raise BudgetAdmissionError("Bounded provider output <=4096 tokens required")
-        super().__init__(*args, **kwargs)
+        model_name = kwargs.get("model") or (args[0] if args else "")
+        if not model_name:
+            raise BudgetAdmissionError("Explicit model is required")
+        super().__init__(model=str(model_name), temperature=kwargs.get("temperature"))
+        self._inner = LLM(*args, **kwargs)
         object.__setattr__(self, "_max_budget_output", output_limit)
         object.__setattr__(self, "_max_budget_input_bytes", int(os.environ.get("MAX_LLM_INPUT_BYTES", "100000")))
         if self._max_budget_input_bytes <= 0:
             raise BudgetAdmissionError("MAX_LLM_INPUT_BYTES must be positive")
+
+    def supports_function_calling(self) -> bool:
+        return self._inner.supports_function_calling()
+
+    def supports_stop_words(self) -> bool:
+        return self._inner.supports_stop_words()
+
+    def get_context_window_size(self) -> int:
+        return self._inner.get_context_window_size()
+
+    def get_token_usage_summary(self):
+        return self._inner.get_token_usage_summary()
+
+    def __getattr__(self, name: str):
+        # Delegate optional CrewAI adapter attributes, but never call/acall.
+        if name in {"call", "acall"}:
+            raise AttributeError(name)
+        inner = self.__dict__.get("_inner")
+        if inner is None:
+            raise AttributeError(name)
+        return getattr(inner, name)
 
     def _admit(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
         # Guard checks the caller-supplied messages and tool schema. A byte
@@ -120,8 +144,8 @@ class BudgetedLLM(LLM):
     def call(self, *args: Any, **kwargs: Any) -> Any:
         self._admit(args, kwargs)
         # On timeout/retry a charge may exist: keep the reserved exposure.
-        return super().call(*args, **kwargs)
+        return self._inner.call(*args, **kwargs)
 
     async def acall(self, *args: Any, **kwargs: Any) -> Any:
         self._admit(args, kwargs)
-        return await super().acall(*args, **kwargs)
+        return await self._inner.acall(*args, **kwargs)
