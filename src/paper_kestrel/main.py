@@ -7,6 +7,7 @@ import re
 import subprocess
 import tempfile
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Literal
 
@@ -26,6 +27,8 @@ DeveloperRole = Literal[
 ]
 
 CheckName = Literal["full_test", "diff_check", "python_compile", "account_focus"]
+Effort = Literal["tiny", "small", "medium", "large"]
+ReviewDisposition = Literal["approve", "approve_with_suggestions", "block"]
 
 
 class WorkItem(BaseModel):
@@ -35,6 +38,10 @@ class WorkItem(BaseModel):
     acceptance_criteria: list[str] = Field(default_factory=list)
     files_hint: list[str] = Field(default_factory=list)
     depends_on: list[str] = Field(default_factory=list)
+    effort: Effort = "small"
+    max_iterations: int = Field(4, ge=2, le=7)
+    budget_usd: float = Field(0.20, ge=0.03, le=0.60)
+    optional: bool = False
 
 
 class DispatchPlan(BaseModel):
@@ -45,12 +52,17 @@ class DispatchPlan(BaseModel):
     use_ui_ux: bool = False
     work_items: list[WorkItem]
     mandatory_checks: list[CheckName] = Field(default_factory=lambda: ["full_test", "diff_check"])
+    master_alignment: list[str] = Field(default_factory=list)
+    run_budget_usd: float = Field(1.20, ge=0.25, le=2.00)
+    stop_conditions: list[str] = Field(default_factory=list)
 
 
 class ReviewDecision(BaseModel):
     approved: bool
+    disposition: ReviewDisposition = "block"
     summary: str
     blocking_issues: list[str] = Field(default_factory=list)
+    suggestions: list[str] = Field(default_factory=list)
     repair_role: DeveloperRole = "solution_architect"
 
 
@@ -58,6 +70,9 @@ class RepairAssignment(BaseModel):
     role: DeveloperRole
     objective: str
     acceptance_criteria: list[str] = Field(default_factory=list)
+    effort: Effort = "small"
+    max_iterations: int = Field(3, ge=2, le=5)
+    budget_usd: float = Field(0.15, ge=0.03, le=0.40)
 
 
 class RepairPlan(BaseModel):
@@ -80,7 +95,7 @@ CORE = lambda: model("MODEL_CORE", "openai/gpt-6.1-sol")
 LIGHT = lambda: model("MODEL_LIGHT", "openai/gpt-6-luna", 8000)
 
 
-def agent_for(role: str, writable: bool = False) -> Agent:
+def agent_for(role: str, writable: bool = False, max_iter: int = 4) -> Agent:
     tools = developer_tools() if writable else reviewer_tools()
     definitions = {
         "delivery_director": (
@@ -149,7 +164,7 @@ def agent_for(role: str, writable: bool = False) -> Agent:
         tools=tools,
         llm=llm,
         allow_delegation=False,
-        max_iter=10,
+        max_iter=max(2, min(int(max_iter), 7)),
         max_retry_limit=1,
         verbose=False,
     )
