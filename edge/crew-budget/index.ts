@@ -51,9 +51,12 @@ Deno.serve(async (request: Request) => {
         !body.reservation_id.startsWith(runId + ":")) {
       return respond({ error: "invalid budget request" }, 400);
     }
-    const amount = Number(body.amount_usd);
-    if (!Number.isFinite(amount) || amount <= 0 || amount > .75 ||
-        !Number.isInteger(amount * 1_000_000)) {
+    const amountText = body.amount_usd;
+    if (typeof amountText !== "string" || !/^0\\.[0-9]{6}$/.test(amountText)) {
+      return respond({ error: "amount must have 6 decimal places" }, 400);
+    }
+    const amount = Number(amountText);
+    if (!Number.isFinite(amount) || amount <= 0 || amount > .75) {
       return respond({ error: "invalid precise amount" }, 400);
     }
     const { data, error } = await adminClient().rpc("crew_budget_reserve", {
