@@ -51,6 +51,24 @@ class StateTests(unittest.TestCase):
             self.store.charge(.35,"engineer",milestone="M11",reservation_id="a")
         self.store.reserve(.3,run_cap=.75,milestone_cap=1.50,milestone="M11",reservation_id="c")
 
+    def test_resume_cannot_change_budget_or_milestone(self):
+        with self.assertRaises(ValueError):
+            self.store.initialize(spec="spec", master="master", cap=1.50, milestone="M11")
+        with self.assertRaises(ValueError):
+            self.store.initialize(spec="spec", master="master", cap=.75, milestone="M12")
+
+    def test_reservation_rejects_wrong_milestone(self):
+        with self.assertRaises(ValueError):
+            self.store.reserve(.1, run_cap=.75, milestone_cap=1.5,
+                               milestone="OTHER", reservation_id="bad")
+        with self.assertRaises(ValueError):
+            self.store.reserve(.1, run_cap=1.5, milestone_cap=1.5,
+                               milestone="M11", reservation_id="bad")
+        self.store.reserve(.1, run_cap=.75, milestone_cap=1.5,
+                           milestone="M11", reservation_id="ok")
+        with self.assertRaises(ValueError):
+            self.store.charge(.05, "llm", milestone="OTHER", reservation_id="ok")
+
     def test_rollback_on_conflict(self):
         self.store.transition("1","PLANNED")
         with self.assertRaises(ValueError):
