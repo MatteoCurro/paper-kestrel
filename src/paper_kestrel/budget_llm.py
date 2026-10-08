@@ -58,8 +58,17 @@ class BudgetedLLM(BaseLLM):
         model_name = kwargs.get("model") or (args[0] if args else "")
         if not model_name:
             raise BudgetAdmissionError("Explicit model is required")
+        # Pinned CrewAI's OpenAI adapter defaults to 2 SDK retries per call.
+        # Those retries could escape one admitted reservation. Disable them:
+        # the BaseLLM outer retry policy may retry, but it re-enters call()
+        # and therefore obtains a NEW reservation for each attempt.
+        if kwargs.get("max_retries", 0) != 0:
+            raise BudgetAdmissionError("Underlying SDK retries must be disabled")
+        kwargs["max_retries"] = 0
         super().__init__(model=str(model_name), temperature=kwargs.get("temperature"))
         self._inner = LLM(*args, **kwargs)
+        if getattr(self._inner, "max_retries", None) != 0:
+            raise BudgetAdmissionError("Pinned provider does not enforce zero SDK retries")
         object.__setattr__(self, "_max_budget_output", output_limit)
         object.__setattr__(self, "_max_budget_input_bytes", int(os.environ.get("MAX_LLM_INPUT_BYTES", "100000")))
         if self._max_budget_input_bytes <= 0:
