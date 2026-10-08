@@ -79,9 +79,10 @@ class RunStore:
         spec_sha = hashlib.sha256(spec.encode()).hexdigest()
         master_sha = hashlib.sha256(master.encode()).hexdigest()
         with self.tx():
-            old = self.db.execute("SELECT spec_sha,master_sha FROM runs WHERE run_id=?", (self.run_id,)).fetchone()
-            if old and old != (spec_sha,master_sha):
-                raise ValueError("Resume refused: input/master changed")
+            old = self.db.execute("SELECT spec_sha,master_sha,run_cap,milestone_key FROM runs WHERE run_id=?", (self.run_id,)).fetchone()
+            if old and (old[0] != spec_sha or old[1] != master_sha or
+                        old[2] != cap or old[3] != milestone):
+                raise ValueError("Resume refused: specification, master, cap or milestone changed")
             self.db.execute("INSERT OR IGNORE INTO runs VALUES(?,?,?,?,?,?,?,?)",
                             (self.run_id,"PREFLIGHT",spec_sha,master_sha,cap,milestone,now,now))
             self.db.execute("INSERT OR IGNORE INTO milestones(key) VALUES(?)", (milestone,))
@@ -106,9 +107,12 @@ class RunStore:
         return True
 
     def reserve(self, amount: float, *, run_cap: float, milestone_cap: float, milestone: str, reservation_id: str) -> None:
-        if amount < 0:
-            raise ValueError("Negative reservation")
+        if amount <= 0 or not reservation_id or not milestone:
+            raise ValueError("Positive reservation, ID and milestone required")
         with self.tx():
+            run = self.db.execute("SELECT run_cap,milestone_key FROM runs WHERE run_id=?", (self.run_id,)).fetchone()
+            if not run or run[1] != milestone or run_cap > run[0] + 1e-9:
+                raise ValueError("Uninitialized run, mismatched milestone or excessive cap")
             if self.db.execute("SELECT 1 FROM reservations WHERE reservation_id=?", (reservation_id,)).fetchone():
                 raise ValueError("Reservation already exists")
             spent = self.db.execute("SELECT COALESCE(SUM(amount),0) FROM costs WHERE run_id=?", (self.run_id,)).fetchone()[0]
@@ -130,6 +134,9 @@ class RunStore:
                                   (reservation_id,self.run_id)).fetchone()
             if not row or row[1]:
                 raise ValueError("Missing or already settled reservation")
+            linked = self.db.execute("SELECT milestone_key FROM runs WHERE run_id=?", (self.run_id,)).fetchone()
+            if not linked or linked[0] != milestone:
+                raise ValueError("Charge milestone differs from reserved run milestone")
             reserved = row[0]
             if amount > reserved + 1e-9:
                 raise ValueError("Actual charge exceeds reserved budget")
