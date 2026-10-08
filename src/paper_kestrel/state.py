@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime, timezone
@@ -23,7 +24,8 @@ class RunStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.run_id = run_id
-        self.db = sqlite3.connect(str(self.path), timeout=30, isolation_level=None)
+        self._lock = threading.RLock()
+        self.db = sqlite3.connect(str(self.path), timeout=30, isolation_level=None, check_same_thread=False)
         self.db.execute("PRAGMA busy_timeout=30000")
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
@@ -65,14 +67,15 @@ class RunStore:
 
     @contextmanager
     def tx(self):
-        self.db.execute("BEGIN IMMEDIATE")
-        try:
-            yield
-        except BaseException:
-            self.db.execute("ROLLBACK")
-            raise
-        else:
-            self.db.execute("COMMIT")
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+            except BaseException:
+                self.db.execute("ROLLBACK")
+                raise
+            else:
+                self.db.execute("COMMIT")
 
     def initialize(self, *, spec: str, master: str, cap: float, milestone: str) -> None:
         now = utc_now()
@@ -160,8 +163,9 @@ class RunStore:
                             (workspace,self.run_id,item))
 
     def pending_outbox(self) -> list[tuple[str,dict]]:
-        return [(row[0],json.loads(row[1])) for row in self.db.execute(
-            "SELECT event_id,payload FROM outbox WHERE delivered=0 ORDER BY created_at,event_id")]
+        with self._lock:
+            return [(row[0],json.loads(row[1])) for row in self.db.execute(
+                "SELECT event_id,payload FROM outbox WHERE delivered=0 ORDER BY created_at,event_id")]
 
     def mark_delivered(self,event_id: str) -> None:
         with self.tx():
