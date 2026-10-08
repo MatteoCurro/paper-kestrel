@@ -45,6 +45,23 @@ Canonical telemetry storage for the first production version:
 - GitHub dashboard authentication and project Supabase Auth are separate identities. The UI should support GitHub OAuth when the provider is configured, while retaining a safe fallback until the authorized identity is linked.
 - No hidden reasoning traces are persisted.
 
+## Operating governance
+
+Jarvis development is executed as a small performance-oriented engineering team, not as a fixed agent pipeline.
+
+- The Delivery Director must read this master plan before every current order and advance only the active milestone.
+- Specialists are invited only when their expertise is materially required.
+- Each work item carries an effort class, maximum iteration ceiling and expected USD budget.
+- Iteration ceilings are maximums, never targets; agents stop early when acceptance criteria are satisfied.
+- Read-only advisory work may run in parallel. Concurrent writes to the same workspace are avoided unless ownership is provably disjoint.
+- Every implementation handoff is summarized on the shared team board so the next specialist reuses prior decisions instead of repeating analysis.
+- The independent reviewer returns one of: approve, approve_with_suggestions, block. Suggestions never trigger repair by themselves.
+- Repairs are grouped by ownership and constrained by remaining run budget.
+- A run stops autonomously on approval, owner-decision requirement, repeated identical failure, no material repair progress, or cost-budget exhaustion.
+- Cost is an engineering signal: planned vs actual spend is recorded per role and for the whole run.
+- Default cost envelope: normal run USD 0.60–1.00; complex run target <= USD 1.25; hard controller ceiling USD 1.50 unless the owner explicitly changes it.
+- No hidden chain-of-thought is persisted; handoffs are short operational summaries.
+
 ## M0 — Pipeline foundation [DONE]
 
 - CrewAI end-to-end smoke validated.
