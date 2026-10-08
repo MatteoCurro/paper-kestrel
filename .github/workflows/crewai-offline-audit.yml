@@ -11,6 +11,7 @@ on:
     paths:
       - 'src/paper_kestrel/**'
       - 'tests/**'
+      - 'edge/crew-budget/**'
       - '.github/workflows/crewai-offline-audit.yml'
 
 permissions:
@@ -37,3 +38,42 @@ jobs:
           OPENAI_API_KEY: ''
           JARVIS_INGEST_URL: ''
         run: python -m unittest discover -s tests -p 'test_*.py' -v
+
+  oidc_tsand:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/infra/transactional-v2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Authenticate to TSAND budget gateway (probe only, no LLM)
+        env:
+          BUDGET_TSAND_URL: https://xiiexzvuvzsiacbmwras.supabase.co/functions/v1/crew-budget
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          endpoint = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+          secret = os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
+          sep = "&" if "?" in endpoint else "?"
+          token_url = endpoint + sep + urllib.parse.urlencode({"audience": "crew-budget-supabase"})
+          request = urllib.request.Request(token_url, headers={"Authorization": "Bearer " + secret})
+          with urllib.request.urlopen(request, timeout=10) as response:
+              token = json.loads(response.read().decode())["value"]
+          probe = urllib.request.Request(
+              os.environ["BUDGET_TSAND_URL"],
+              data=b'{"action":"probe"}',
+              method="POST",
+              headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+          )
+          with urllib.request.urlopen(probe, timeout=15) as response:
+              result = json.loads(response.read().decode())
+          assert result.get("ok") is True and result.get("authorized") is True
+          assert result.get("repository") == "MatteoCurro/paper-kestrel"
+          assert result.get("branch") == "refs/heads/infra/transactional-v2"
+          print("TSAND OIDC handshake authenticated. No model calls and no budget reservation.")
+          PY
