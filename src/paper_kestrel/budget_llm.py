@@ -20,7 +20,8 @@ from typing import Any
 from crewai import BaseLLM, LLM
 
 from .budget import BudgetAdmissionError, CallBound, ModelRate, reserve_before_transport
-from .budget_gateway import reserve_remote
+from .budget_gateway import reserve_remote, settle_remote
+from .metering import actual_cost_usd
 from .state import RunStore
 
 
@@ -95,7 +96,7 @@ class BudgetedLLM(BaseLLM):
             raise AttributeError(name)
         return getattr(inner, name)
 
-    def _admit(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
+    def _admit(self, args: tuple[Any, ...], kwargs: dict[str, Any]):
         # Guard checks the caller-supplied messages and tool schema. A byte
         # upper bound is conservative versus tokenizer accounting, but must
         # still be validated against the pinned CrewAI provider adapter.
@@ -124,6 +125,7 @@ class BudgetedLLM(BaseLLM):
             ceiling = min(Decimal("0.75"),
                           Decimal(os.environ.get("MAX_RUN_COST_USD", "0.75")),
                           Decimal(os.environ.get("HARD_RUN_COST_USD", "0.75")))
+            rates = configured_rates()
             exposure = reserve_before_transport(
                 store,
                 bound=CallBound(
@@ -132,7 +134,7 @@ class BudgetedLLM(BaseLLM):
                     max_output_tokens=self._max_budget_output,
                     max_tool_roundtrips=0,  # each actual call is admitted separately
                 ),
-                rates=configured_rates(),
+                rates=rates,
                 reservation_id=reservation_id,
                 milestone=milestone,
                 run_cap=ceiling,
@@ -148,13 +150,46 @@ class BudgetedLLM(BaseLLM):
             )
         finally:
             store.db.close()
-        return reservation_id
+        return reservation_id, milestone, exposure, rates[str(self.model)]
+
+    def _snapshot(self):
+        try:
+            return self._inner.get_token_usage_summary()
+        except (AttributeError, ValueError, TypeError):
+            return None
+
+    def _reconcile(self, admitted, before, after) -> None:
+        reservation_id, milestone, exposure, rate = admitted
+        cost = actual_cost_usd(
+            before, after,
+            input_per_million=rate.input_per_million,
+            output_per_million=rate.output_per_million,
+            maximum=exposure,
+        )
+        if cost is None:
+            # Provider metrics unavailable: do not release the reserved money.
+            return
+        # Remote ledger is authoritative. If settlement acknowledgement fails,
+        # keep local reservation outstanding and fail closed.
+        settle_remote(reservation_id=reservation_id, amount_usd=cost)
+        store = RunStore(Path(os.environ["RUN_STATE_DB"]), os.environ["RUN_STATE_ID"])
+        try:
+            store.charge(float(cost), "llm", milestone=milestone,
+                         reservation_id=reservation_id)
+        finally:
+            store.db.close()
 
     def call(self, *args: Any, **kwargs: Any) -> Any:
-        self._admit(args, kwargs)
-        # On timeout/retry a charge may exist: keep the reserved exposure.
-        return self._inner.call(*args, **kwargs)
+        admitted = self._admit(args, kwargs)
+        before = self._snapshot()
+        # Exceptions after dispatch may still incur charges; retain exposure.
+        result = self._inner.call(*args, **kwargs)
+        self._reconcile(admitted, before, self._snapshot())
+        return result
 
     async def acall(self, *args: Any, **kwargs: Any) -> Any:
-        self._admit(args, kwargs)
-        return await self._inner.acall(*args, **kwargs)
+        admitted = self._admit(args, kwargs)
+        before = self._snapshot()
+        result = await self._inner.acall(*args, **kwargs)
+        self._reconcile(admitted, before, self._snapshot())
+        return result
