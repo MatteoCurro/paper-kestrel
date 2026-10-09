@@ -39,21 +39,28 @@ def _github_oidc_token() -> str:
         raise BudgetAdmissionError("Cannot attest GitHub Actions identity") from exc
 
 
-def reserve_remote(*, reservation_id: str, milestone: str, amount_usd: Decimal) -> None:
+def _budget_request(*, action: str, reservation_id: str,
+                    amount_usd: Decimal, milestone: str | None = None) -> None:
+    if action not in ("reserve", "settle"):
+        raise BudgetAdmissionError("Unsupported budget request")
     url = os.environ.get("CREW_BUDGET_URL", "").strip()
     if not url.startswith("https://"):
         raise BudgetAdmissionError("HTTPS central budget authority is required")
-    if not reservation_id or not milestone:
-        raise BudgetAdmissionError("Budget reservation identity is missing")
+    if not reservation_id or (action == "reserve" and not milestone):
+        raise BudgetAdmissionError("Budget identity missing")
+    if amount_usd < 0 or amount_usd > Decimal("0.75"):
+        raise BudgetAdmissionError("Invalid budget amount")
+    payload = {
+        "action": action,
+        "reservation_id": reservation_id,
+        "amount_usd": format(amount_usd, ".6f"),
+    }
+    if action == "reserve":
+        payload["milestone"] = milestone
     token = _github_oidc_token()
     request = urllib.request.Request(
         url,
-        data=json.dumps({
-            "action": "reserve",
-            "reservation_id": reservation_id,
-            "milestone": milestone,
-            "amount_usd": format(amount_usd, ".6f"),
-        }).encode("utf-8"),
+        data=json.dumps(payload).encode("utf-8"),
         method="POST",
         headers={
             "Authorization": "Bearer " + token,
@@ -63,8 +70,19 @@ def reserve_remote(*, reservation_id: str, milestone: str, amount_usd: Decimal) 
     )
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
-            accepted = json.loads(response.read().decode("utf-8"))
-        if not isinstance(accepted, dict) or accepted.get("accepted") is not True:
+            result = json.loads(response.read().decode("utf-8"))
+        expected = "accepted" if action == "reserve" else "settled"
+        if not isinstance(result, dict) or result.get(expected) is not True:
             raise BudgetAdmissionError("Central budget authority refused request")
     except (OSError, ValueError) as exc:
         raise BudgetAdmissionError("Central budget authority unavailable or denied") from exc
+
+
+def reserve_remote(*, reservation_id: str, milestone: str, amount_usd: Decimal) -> None:
+    _budget_request(action="reserve", reservation_id=reservation_id,
+                    milestone=milestone, amount_usd=amount_usd)
+
+
+def settle_remote(*, reservation_id: str, amount_usd: Decimal) -> None:
+    _budget_request(action="settle", reservation_id=reservation_id,
+                    amount_usd=amount_usd)
