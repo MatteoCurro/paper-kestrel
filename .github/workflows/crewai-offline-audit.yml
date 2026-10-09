@@ -38,6 +38,22 @@ jobs:
           OPENAI_API_KEY: ''
           JARVIS_INGEST_URL: ''
         run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Rehearse end-to-end CrewAI transaction (four no-spend scenarios)
+        env:
+          OPENAI_API_KEY: ''
+          JARVIS_INGEST_URL: ''
+        run: |
+          mkdir -p output
+          for scenario in ux_revision approved crash review_block; do
+            python -m paper_kestrel.simulation --scenario "$scenario" | tee -a output/tsand-dryrun.jsonl
+          done
+      - name: Preserve dry-run evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: tsand-rehearsal
+          path: output/tsand-dryrun.jsonl
+          if-no-files-found: error
+          retention-days: 14
 
   oidc_tsand:
     if: github.event_name == 'pull_request' && github.event.pull_request.number == 1 && github.event.pull_request.head.repo.full_name == 'MatteoCurro/paper-kestrel' && github.head_ref == 'infra/transactional-v2'
