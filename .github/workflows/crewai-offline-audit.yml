@@ -40,7 +40,7 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_*.py' -v
 
   oidc_tsand:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/infra/transactional-v2'
+    if: github.event_name == 'pull_request' && github.event.pull_request.number == 1 && github.event.pull_request.head.repo.full_name == 'MatteoCurro/paper-kestrel' && github.head_ref == 'infra/transactional-v2'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -74,6 +74,6 @@ jobs:
               result = json.loads(response.read().decode())
           assert result.get("ok") is True and result.get("authorized") is True
           assert result.get("repository") == "MatteoCurro/paper-kestrel"
-          assert result.get("branch") == "refs/heads/infra/transactional-v2"
+          assert result.get("branch") == "refs/pull/1/merge"
           print("TSAND OIDC handshake authenticated. No model calls and no budget reservation.")
           PY
