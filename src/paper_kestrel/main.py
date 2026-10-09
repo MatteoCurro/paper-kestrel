@@ -18,6 +18,7 @@ from .tools import developer_tools, reviewer_tools
 from .jarvis import EMITTER
 from .state import RunStore
 from .recovery import CheckpointJournal, fingerprint
+from .ux_loop import UXCritique, critique_and_revise, requires_ux_review
 from .budget_llm import BudgetedLLM
 
 
@@ -1159,6 +1160,92 @@ Do not redesign the whole solution. Do not write code. Be concise and surface on
         except Exception as exc:
             event_log.append({"stage": "blocked", "item": item.id, "role": item.role, "error": str(exc)})
             raise RuntimeError(f"Work item {item.id} failed; reconciliation required before replay") from exc
+
+    # Independent post-implementation product review. The prior advisory
+    # phase is not sufficient: a critic must inspect the *actual* UI diff.
+    # A failed/blocked critique is never silently converted into QA approval.
+    candidate_paths = changed_paths(work)
+    if plan.use_ui_ux or requires_ux_review(candidate_paths):
+        def _ux_critic() -> UXCritique:
+            reviewer = agent_for("ui_ux", writable=False, max_iter=2)
+            return run_single(
+                reviewer,
+                f"""Review the actual implemented candidate as a critical product partner.
+
+MASTER PLAN:
+{master}
+
+OWNER SPECIFICATION:
+{spec}
+
+ACCEPTANCE CRITERIA:
+{json.dumps([x for item in plan.work_items for x in item.acceptance_criteria], ensure_ascii=False)}
+
+IMPLEMENTATION HANDOFFS:
+{chr(10).join(team_handoffs[-8:])}
+
+CURRENT CODE DIFF:
+{git_diff(work)}
+
+Return a structured UX critique. Only request 'revise' for concrete
+usability, hierarchy, interaction, accessibility or user-value issues.
+For every revision give specific findings and testable acceptance checks.
+Purely cosmetic preferences and speculative ideas are non-blocking.
+You may challenge the engineering approach rather than merely checking
+that the code compiles. Do not propose production deployment.
+""",
+                "A structured, actionable independent UX critique.",
+                UXCritique,
+            )
+
+        def _ux_revise(findings: tuple[str,...], acceptance: tuple[str,...]) -> str:
+            feedback = "\\n".join(f"- {finding}" for finding in findings)
+            revision = WorkItem(
+                id="ux-revision-1",
+                role="product_engineer",
+                objective=(
+                    "Resolve the independent UX Critic's concrete blockers "
+                    "without expanding the master-plan scope. UX feedback:\\n" + feedback
+                ),
+                acceptance_criteria=list(acceptance) or [
+                    "Each concrete UX blocker is addressed with observable behavior",
+                    "Existing tests and acceptance criteria remain intact",
+                ],
+                effort="small",
+                max_iterations=2,
+                budget_usd=0.10,
+                memory_scopes=["product_ux", "engineering"],
+            )
+            before_diff = git_diff(work)
+            answer = execute_work_item(
+                revision, spec_path, spec, master, advice,
+                [*team_handoffs, compact_handoff("UX Critic", feedback)],
+                run_budget,
+            )
+            if git_diff(work) == before_diff:
+                raise RuntimeError("UX feedback requested changes but candidate diff did not change")
+            return answer
+
+        ux_outcome = critique_and_revise(_ux_critic, _ux_revise)
+        event_log.append({
+            "stage": "ux_critique",
+            "disposition": ux_outcome.disposition,
+            "findings": list(ux_outcome.feedback),
+            "revised": ux_outcome.revised,
+            "engineer_handoff": ux_outcome.engineer_handoff[-4000:],
+        })
+        EMITTER.emit(
+            "ux.feedback",
+            "UX Critic reviewed implementation; revision "
+            + ("completed" if ux_outcome.revised else "not required"),
+            agent="Senior UI/UX and Visual Design Reviewer",
+            status="done",
+            phase="implementation",
+            details={"revised": ux_outcome.revised, "findings": list(ux_outcome.feedback)},
+        )
+        if ux_outcome.revised:
+            team_handoffs.append(compact_handoff("UX Critic", "; ".join(ux_outcome.feedback)))
+            team_handoffs.append(compact_handoff("Senior Product Engineer", ux_outcome.engineer_handoff))
 
     max_repairs = min(int(os.environ.get("MAX_REPAIR_ROUNDS", "1")), 1)
     allowed_checks: set[str] = {"full_test", "diff_check", "python_compile", "account_focus"}
