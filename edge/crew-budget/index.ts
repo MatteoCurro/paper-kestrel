@@ -105,7 +105,6 @@ Deno.serve(async (request: Request) => {
     if (!PAID_ADMISSION_ENABLED || branchRef !== "refs/heads/infra/transactional-v2") {
       return respond({ error: "paid activity disabled in TSAND until Phase 4" }, 423);
     }
-    const action = String(body?.action || "");
     if (!["reserve", "settle"].includes(action) ||
         !validIdentifier(body?.reservation_id) ||
         !body.reservation_id.startsWith(reservationPrefix)) {
@@ -116,7 +115,7 @@ Deno.serve(async (request: Request) => {
     }
     const amountText = body.amount_usd;
     // JSON strings preserve decimal precision. Reject any precision drift.
-    if (typeof amountText !== "string" || !/^\\d+\\.\\d{6}$/.test(amountText)) {
+    if (typeof amountText !== "string" || !/^[0-9]+[.][0-9]{6}$/.test(amountText)) {
       return respond({ error: "amount must have exactly 6 decimal places" }, 400);
     }
     const amount = Number(amountText);
