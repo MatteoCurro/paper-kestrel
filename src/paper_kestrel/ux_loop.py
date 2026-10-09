@@ -23,9 +23,17 @@ class UXOutcome:
     engineer_handoff: str = ""
 
 def requires_ux_review(paths: list[str]) -> bool:
-    return any(p.lower().endswith((".html",".css",".jsx",".tsx",".vue",".svelte"))
-               or "/ui/" in p.lower() or "/components/" in p.lower()
-               for p in paths)
+    """Detect user-facing UI even in vanilla JS projects, not backend scripts."""
+    def is_ui(path: str) -> bool:
+        p = path.lower().replace(chr(92), "/").lstrip("./")
+        if p.endswith((".html", ".css", ".jsx", ".tsx", ".vue", ".svelte")):
+            return True
+        if "/ui/" in p or "/components/" in p:
+            return True
+        return p.endswith((".js", ".ts")) and p.startswith((
+            "assets/", "js/", "public/", "client/", "frontend/", "web/", "app/"
+        ))
+    return any(is_ui(p) for p in paths)
 
 def critique_and_revise(
     review: Callable[[], UXCritique],
