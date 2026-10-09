@@ -60,10 +60,13 @@ def rehearse(scenario: str = "ux_revision") -> RehearsalReport:
             store.acquire_writer(str(root.resolve()), "task1")
             journal.begin("work:task1", {"objective":"Create accessible form"})
             try:
-                WriteFileTool()._run(
-                    path="account.html",
-                    content="<form><input aria-label='Email'></form>",
-                )
+                base_form = "<form><input aria-label='Email'></form>"
+                if scenario in {"approved", "review_block"}:
+                    base_form = (
+                        "<form><input aria-label='Email'>"
+                        "<button type='submit'>Send</button></form>"
+                    )
+                WriteFileTool()._run(path="account.html", content=base_form)
                 steps.append("engineer:write")
                 if scenario == "crash":
                     journal.uncertain("work:task1")
@@ -109,9 +112,10 @@ def rehearse(scenario: str = "ux_revision") -> RehearsalReport:
                 outcome = critique_and_revise(review,revise)
                 assert outcome.revised == (scenario=="ux_revision")
                 steps.append("reviewer:independent")
-                accepted = scenario != "review_block" and (
-                    "<button" in (root/"account.html").read_text()
-                    or scenario=="approved")
+                accepted = (
+                    scenario != "review_block"
+                    and "<button" in (root/"account.html").read_text()
+                )
                 store.transition("finish","ACCEPTED" if accepted else "BLOCKED",
                                  {"simulation":True,"ux_revision":outcome.revised})
         emitter.enabled=True
