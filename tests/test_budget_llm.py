@@ -73,6 +73,27 @@ class GuardedLLMTests(unittest.TestCase):
                 self.assertEqual(llm.call("hello"), "model-output")
             remote.assert_called_once()
 
+    def test_known_provider_usage_settles_exact_delta(self):
+        llm = self.llm()
+        prior = {"prompt_tokens": 100, "completion_tokens": 50,
+                 "successful_requests": 1}
+        after = {"prompt_tokens": 1100, "completion_tokens": 250,
+                 "successful_requests": 2}
+        with patch("paper_kestrel.budget_llm.reserve_remote") as reserve:
+            with patch("paper_kestrel.budget_llm.settle_remote") as settle:
+                with patch.object(type(llm._inner), "call", return_value="ok"):
+                    with patch.object(type(llm._inner), "get_token_usage_summary",
+                                      side_effect=[prior, after]):
+                        self.assertEqual(llm.call("hello"), "ok")
+        reserve.assert_called_once()
+        settle.assert_called_once()
+        self.assertEqual(settle.call_args.kwargs["amount_usd"],
+                         __import__("decimal").Decimal("0.004000"))
+        self.assertEqual(self.store.db.execute(
+            "SELECT settled FROM reservations").fetchone()[0], 1)
+        self.assertAlmostEqual(self.store.db.execute(
+            "SELECT amount FROM costs").fetchone()[0], .004)
+
     def test_repeated_calls_reserve_separately(self):
         llm = self.llm()
         with patch("paper_kestrel.budget_llm.reserve_remote"):
