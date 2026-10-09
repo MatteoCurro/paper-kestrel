@@ -66,6 +66,39 @@ Deno.serve(async (request: Request) => {
       return respond({ ok: true, authorized: true, repository: REPOSITORY,
                        github_run_id: runId, branch: String(payload.ref) });
     }
+    // Checkpoints are free and safe during the simulation phase.
+    // A PR workflow may use only its own synthetic smoke-test keys.
+    const action = String(body?.action || "");
+    if (action === "checkpoint_claim" || action === "checkpoint_complete") {
+      if (workflow !== WORKFLOW && !(stagingPrProbe && action.startsWith("checkpoint_"))) {
+        return respond({ error: "checkpoint workflow forbidden" }, 403);
+      }
+      const step = String(body?.step || "");
+      const inputSha = String(body?.input_sha || "");
+      const candidateSha = body?.candidate_sha === null ? null : String(body?.candidate_sha || "");
+      if (step.length < 1 || step.length > 180 ||
+          (workflow !== WORKFLOW && !step.startsWith("smoke:")) ||
+          !/^[a-f0-9]{64}$/.test(inputSha) ||
+          (candidateSha !== null && !/^[a-f0-9]{64}$/.test(candidateSha))) {
+        return respond({ error: "invalid checkpoint request" }, 400);
+      }
+      if (action === "checkpoint_complete" &&
+          (!body?.result || JSON.stringify(body.result).length > 30000)) {
+        return respond({ error: "invalid checkpoint result" }, 400);
+      }
+      const params: Record<string, unknown> = {
+        p_run_id: runId, p_step: step,
+        p_input_sha: inputSha, p_candidate_sha: candidateSha,
+      };
+      if (action === "checkpoint_complete") params.p_result = body.result;
+      const name = action === "checkpoint_claim"
+        ? "crew_checkpoint_claim" : "crew_checkpoint_complete";
+      const { data, error } = await adminClient().rpc(name, params);
+      if (error || data?.accepted !== true) {
+        return respond({ error: "checkpoint denied or needs reconciliation" }, 409);
+      }
+      return respond(data);
+    }
     if (workflow !== WORKFLOW) {
       return respond({ error: "workflow cannot reserve budget" }, 403);
     }
