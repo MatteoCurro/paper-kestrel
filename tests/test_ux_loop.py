@@ -7,6 +7,8 @@ class UXLoopTests(unittest.TestCase):
     def test_ui_files_trigger_critic(self):
         self.assertTrue(requires_ux_review(["public/app/index.html"]))
         self.assertTrue(requires_ux_review(["src/ui/Account.js"]))
+        self.assertTrue(requires_ux_review(["assets/js/account.js"]))
+        self.assertFalse(requires_ux_review(["server/routes/auth.js"]))
         self.assertFalse(requires_ux_review(["server/ingestion.py"]))
 
     def test_approved_design_does_not_make_extra_calls(self):
