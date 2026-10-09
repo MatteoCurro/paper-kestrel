@@ -3,7 +3,7 @@
 Status: IN PROGRESS / NOT AUTHORIZED FOR PAID RUNS.
 
 ## Baseline and scope
-- Target branch: infra/crewai-bootstrap, not product production main.
+- Target branch: public paper-kestrel infra/transactional-v2 (draft PR #1), not product production main.
 - Existing governance: AGENT-OPERATING-MODEL.md.
 - Master plan remains in assembled product workspace.
 - No product or production deploy is authorized by this migration.
@@ -103,3 +103,29 @@ SQLite provides ACID only for its local transactions. GitHub pushes, LLM calls a
 5. Make write-role authorization and external Git/PR Saga idempotent across cancelled GitHub jobs, not only within a single SQLite instance.
 6. Jarvis outbox depends on its receiving endpoint's idempotent `event_key`; test actual delivery on TSAND, not production.
 7. This project follows the user's instruction to work **only in TSAND**. No deployment to any production host or product branch is permitted.
+
+## Phases 1–3 — TSAND integration acceptance, 2026-10-09
+
+| Phase | Implementation | Verified | Remaining boundary |
+|---|---|---|---|
+| 1 Budget | `metering.py` reconciles per-call input/output delta against accepted reservation; `budget_gateway.py` adds remote idempotent settlement; TSAND Edge admits settlement via private Postgres RPC | Unit tests; transactional SQL reserve/settle/idempotence under ROLLBACK | Real provider-specific serialization/input token bound and rate card must be audited before real spending |
+| 1 Recovery | Private `crew_budget.checkpoints`, OIDC RPC claim/commit and Python `RemoteCheckpoint`; local journal imports verified remotely committed result across a fresh runner; interrupted claims remain blocked | Offline cross-run two-database regression; GitHub OIDC authenticated claim/commit/replay; matching row present in TSAND Postgres | Candidate filesystem patch is **not** automatically restored on a new runner; absent exact state, fail closed |
+| 2 Agent dialogue | One independent **post-implementation** UX critique for UI diffs or explicitly requested UX review, followed by at most one Product Engineer revision; final QA Reviewer is independent | UX feedback contract tests and deterministic simulated revision / approval cases | First real CrewAI multi-model dialogue is intentionally deferred to phase 4 |
+| 3 Simulation | `python -m paper_kestrel.simulation --scenario ux_revision|approved|crash|review_block`: real SQLite journal, writer lease/file tool, UX handoff and Jarvis outbox, deterministic role responses | GitHub Actions run 37879031268, **52 offline tests passed**, OIDC TSAND job passed, remote smoke checkpoint completed | Not a proof of real model decision quality, browser UX, or live PR creation |
+
+### Safety invariant (unchanged)
+- TSAND Supabase project only: `u-venice-transport-tsand`, edge function `crew-budget` v9.
+- Edge code has `PAID_ADMISSION_ENABLED = false`; real model reservation and settlement endpoints return 423 until separately authorized.
+- Operational workflow in this draft branch still stops before any run. Do not merge, unlock, or use `main` for agent PRs.
+- Public staging product targets are `winter-opal:t-sand` and `quiet-spindle:t-sand`; no product production deployment.
+- The **older workflow on paper-kestrel/main is separate** and must be explicitly audited/disabled before any autonomous activation. A draft-branch gate alone cannot secure main.
+- Provider-side retry ceiling is set to zero; CrewAI rate-limit retries cross our guarded wrapper and reserve again. Unknown usage retains reserved exposure (never credited as free).
+- Supabase security advisors report INFO `rls_enabled_no_policy` on four private `crew_budget` tables: intentional deny-by-default; service_role-only RPC access. Separate pre-existing Auth password-protection warning does not belong to CrewAI migration.
+
+### Phase-4 NO-GO checklist
+- [ ] Independently verify model IDs, published rate cards, provider input token accounting and output/retry ceilings (no optimistic byte-to-token assumptions).
+- [ ] Safely restore exact changed workspace on GitHub retry, or explicitly continue to block rather than restart it.
+- [ ] Complete full workflow dry-run including report and candidate PR against public `t-sand` without merging.
+- [ ] Harden the public `main` legacy workflow, independently of V2 branch.
+- [ ] Get explicit approval for any first paid run or run over the established budget policy.
+- [ ] Keep production release, deployment credentials and private app `main` entirely out of scope.
