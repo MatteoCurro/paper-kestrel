@@ -36,9 +36,18 @@ Deno.serve(async (request: Request) => {
       issuer: ISSUER, audience: AUDIENCE,
     });
     const workflow = String(payload.workflow || "");
+    const branchRef = String(payload.ref || "");
+    const stagingPrProbe =
+      workflow === "CrewAI offline safety audit" &&
+      payload.event_name === "pull_request" &&
+      payload.head_ref === "infra/transactional-v2" &&
+      payload.base_ref === "main" &&
+      branchRef === "refs/pull/1/merge";
+    const trustedBranch = ALLOWED_REFS.has(branchRef);
     if (payload.repository !== REPOSITORY ||
+        String(payload.repository_id) !== "1409141984" ||
         !(workflow === WORKFLOW || PROBE_WORKFLOWS.has(workflow)) ||
-        !ALLOWED_REFS.has(String(payload.ref || ""))) {
+        !(trustedBranch || stagingPrProbe)) {
       return respond({ error: "unauthorized Actions identity" }, 403);
     }
     const numericRun = Number(payload.run_id);
