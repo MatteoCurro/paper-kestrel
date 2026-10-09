@@ -37,6 +37,7 @@ jobs:
       MILESTONE_KEY: ${{ vars.MILESTONE_KEY }}
       MODEL_PRICING_JSON: ${{ secrets.MODEL_PRICING_JSON }}
       CREW_BUDGET_URL: "https://xiiexzvuvzsiacbmwras.supabase.co/functions/v1/crew-budget"
+      CREW_CHECKPOINT_URL: "https://xiiexzvuvzsiacbmwras.supabase.co/functions/v1/crew-budget"
       CREW_BUDGET_AUDIENCE: "crew-budget-supabase"
       JARVIS_INGEST_URL: "https://xiiexzvuvzsiacbmwras.supabase.co/functions/v1/jarvis-ingest"
       JARVIS_AUDIENCE: "jarvis-supabase"
