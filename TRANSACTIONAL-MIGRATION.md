@@ -129,3 +129,10 @@ SQLite provides ACID only for its local transactions. GitHub pushes, LLM calls a
 - [ ] Harden the public `main` legacy workflow, independently of V2 branch.
 - [ ] Get explicit approval for any first paid run or run over the established budget policy.
 - [ ] Keep production release, deployment credentials and private app `main` entirely out of scope.
+
+### Final no-spend acceptance evidence
+- [GitHub Actions 37879267180](https://github.com/MatteoCurro/paper-kestrel/actions/runs/37879267180): offline suite **52/52 passed**, `oidc_tsand` **success**, four standalone `paper_kestrel.simulation` scenarios **success**, saved in `tsand-rehearsal` artifact.
+- Dry-run evidence: `ux_revision` accepted with one UX→Engineer feedback revision; `approved` accepted without revision; `crash` correctly blocked replay; `review_block` correctly not accepted. All outbox entries acknowledged by mocked Jarvis transport.
+- [Latest follow-up CI 37879313506](https://github.com/MatteoCurro/paper-kestrel/actions/runs/37879313506): success after enhancing vanilla-JS UI-change detection.
+- Actual TSAND Postgres checkpoint for run 37879031268 is `COMPLETED`; a read-only verification found zero budget reservations from the dry-run workflows.
+- Runtime change boundaries: only draft PR on `infra/transactional-v2`, public workspace staging branches, and Supabase TSAND Edge v9. No production app deploy or product main changes.
