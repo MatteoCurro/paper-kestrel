@@ -8,6 +8,8 @@ const REPOSITORY = "MatteoCurro/paper-kestrel";
 const WORKFLOW = "Maintenance pass";
 const PROBE_WORKFLOWS = new Set(["CrewAI budget OIDC smoke", "CrewAI offline safety audit"]);
 const AUDIENCE = "crew-budget-supabase";
+// Phases 1–3 only: allow authenticated identity probes, NEVER real monetary admission.
+const PAID_ADMISSION_ENABLED = false;
 const ALLOWED_REFS = new Set(["refs/heads/main", "refs/heads/infra/transactional-v2"]);
 const JWKS = createRemoteJWKSet(new URL(ISSUER + "/.well-known/jwks"));
 
@@ -66,6 +68,9 @@ Deno.serve(async (request: Request) => {
     }
     if (workflow !== WORKFLOW) {
       return respond({ error: "workflow cannot reserve budget" }, 403);
+    }
+    if (!PAID_ADMISSION_ENABLED || branchRef !== "refs/heads/infra/transactional-v2") {
+      return respond({ error: "paid activity disabled in TSAND until Phase 4" }, 423);
     }
     const action = String(body?.action || "");
     if (!["reserve", "settle"].includes(action) ||
