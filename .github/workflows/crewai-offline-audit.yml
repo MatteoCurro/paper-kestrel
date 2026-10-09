@@ -76,4 +76,32 @@ jobs:
           assert result.get("repository") == "MatteoCurro/paper-kestrel"
           assert result.get("branch") == "refs/pull/1/merge"
           print("TSAND OIDC handshake authenticated. No model calls and no budget reservation.")
+          import hashlib
+          def checkpoint_request(action, result=None):
+              body = {
+                  "action": action,
+                  "step": "smoke:" + os.environ["GITHUB_RUN_ID"],
+                  "input_sha": hashlib.sha256(b"cross-run-tsand-smoke").hexdigest(),
+                  "candidate_sha": None,
+              }
+              if result is not None:
+                  body["result"] = result
+              call = urllib.request.Request(
+                  os.environ["BUDGET_TSAND_URL"],
+                  data=json.dumps(body).encode(),
+                  method="POST",
+                  headers={"Authorization": "Bearer " + token,
+                           "Content-Type": "application/json"},
+              )
+              with urllib.request.urlopen(call,timeout=15) as response:
+                  return json.loads(response.read().decode())
+          claimed = checkpoint_request("checkpoint_claim")
+          if not claimed.get("cached"):
+              committed = checkpoint_request("checkpoint_complete", {"result": "approved"})
+              assert committed.get("accepted") is True
+          replay = checkpoint_request("checkpoint_claim")
+          assert replay.get("cached") is True
+          assert replay.get("result") == {"result": "approved"}
+          print("TSAND central checkpoint claim/commit/replay verified; 0 LLM calls")
+
           PY
