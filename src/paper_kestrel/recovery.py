@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from typing import Any
 
 from .state import RunStore, utc_now
@@ -24,8 +25,15 @@ def fingerprint(value: Any) -> str:
 
 
 class CheckpointJournal:
-    def __init__(self, store: RunStore):
+    def __init__(self, store: RunStore, remote=None):
         self.store = store
+        if remote is not None:
+            self.remote = remote
+        elif os.environ.get("CREW_CHECKPOINT_URL"):
+            from .remote_checkpoint import RemoteCheckpoint
+            self.remote = RemoteCheckpoint(os.environ["CREW_CHECKPOINT_URL"])
+        else:
+            self.remote = None
         with store.tx():
             store.db.execute("""
             CREATE TABLE IF NOT EXISTS checkpoints(
@@ -46,6 +54,31 @@ class CheckpointJournal:
         never skip work from a restored ledger against a clean workspace.
         """
         sha = fingerprint(inputs)
+        shared = None
+        if self.remote is not None:
+            # Global claim FIRST. An interrupted earlier GitHub attempt
+            # rejects a fresh runner before it can repeat a paid side effect.
+            shared = self.remote.claim(step_key, sha, candidate_sha)
+            if shared.get("cached") is True:
+                cached = shared.get("result")
+                if not isinstance(cached, dict):
+                    raise RecoveryBlocked("Invalid shared checkpoint payload")
+                with self.store.tx():
+                    row = self.store.db.execute(
+                        "SELECT input_sha,status,result_json,candidate_sha FROM checkpoints WHERE run_id=? AND step_key=?",
+                        (self.store.run_id,step_key),
+                    ).fetchone()
+                    encoded = json.dumps(cached,sort_keys=True,ensure_ascii=False)
+                    if row is not None and (row[0] != sha or row[1] != "COMPLETED" or
+                        json.loads(row[2]) != cached or
+                        (row[3] is not None and row[3] != candidate_sha)):
+                        raise RecoveryBlocked("Shared and local checkpoint conflict")
+                    if row is None:
+                        self.store.db.execute(
+                            "INSERT INTO checkpoints VALUES(?,?,?,'COMPLETED',?,?,?)",
+                            (self.store.run_id,step_key,sha,encoded,candidate_sha,utc_now()),
+                        )
+                return cached
         with self.store.tx():
             row = self.store.db.execute(
                 """SELECT input_sha,status,result_json,candidate_sha FROM checkpoints
@@ -60,6 +93,8 @@ class CheckpointJournal:
                     raise RecoveryBlocked(f"Interrupted/uncertain step requires reconciliation: {step_key}")
                 if stored_candidate is not None and stored_candidate != candidate_sha:
                     raise RecoveryBlocked(f"Restored candidate does not match checkpoint: {step_key}")
+                if self.remote is not None and shared is not None:
+                    raise RecoveryBlocked("Local completed but shared checkpoint was uncommitted")
                 return json.loads(output)
             self.store.db.execute(
                 "INSERT INTO checkpoints VALUES(?,?,?,'STARTED',NULL,NULL,?)",
@@ -82,6 +117,10 @@ class CheckpointJournal:
                    updated_at=? WHERE run_id=? AND step_key=?""",
                 (output,candidate_sha,utc_now(),self.store.run_id,step_key),
             )
+        if self.remote is not None:
+            if not isinstance(result, dict):
+                raise RecoveryBlocked("Remote checkpoint needs JSON object result")
+            self.remote.complete(step_key, sha, candidate_sha, result)
 
     def uncertain(self, step_key: str) -> None:
         with self.store.tx():
