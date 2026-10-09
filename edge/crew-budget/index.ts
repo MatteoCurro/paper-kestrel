@@ -67,30 +67,38 @@ Deno.serve(async (request: Request) => {
     if (workflow !== WORKFLOW) {
       return respond({ error: "workflow cannot reserve budget" }, 403);
     }
-    if (body?.action !== "reserve" || !validIdentifier(body?.milestone) ||
+    const action = String(body?.action || "");
+    if (!["reserve", "settle"].includes(action) ||
         !validIdentifier(body?.reservation_id) ||
         !body.reservation_id.startsWith(reservationPrefix)) {
       return respond({ error: "invalid budget request" }, 400);
     }
+    if (action === "reserve" && !validIdentifier(body?.milestone)) {
+      return respond({ error: "invalid milestone" }, 400);
+    }
     const amountText = body.amount_usd;
-    if (typeof amountText !== "string" || !/^0\\.[0-9]{6}$/.test(amountText)) {
-      return respond({ error: "amount must have 6 decimal places" }, 400);
+    // JSON strings preserve decimal precision. Reject any precision drift.
+    if (typeof amountText !== "string" || !/^\\d+\\.\\d{6}$/.test(amountText)) {
+      return respond({ error: "amount must have exactly 6 decimal places" }, 400);
     }
     const amount = Number(amountText);
-    if (!Number.isFinite(amount) || amount <= 0 || amount > .75) {
+    if (!Number.isFinite(amount) || amount < 0 || amount > .75 ||
+        (action === "reserve" && amount === 0)) {
       return respond({ error: "invalid precise amount" }, 400);
     }
-    const { data, error } = await adminClient().rpc("crew_budget_reserve", {
-      p_run_id: runId,
-      p_milestone: body.milestone,
-      p_key: body.reservation_id,
-      p_amount: amount,
-    });
+    const argumentsForRpc = action === "reserve"
+      ? {p_run_id: runId, p_milestone: body.milestone, p_key: body.reservation_id, p_amount: amountText}
+      : {p_run_id: runId, p_key: body.reservation_id, p_charged: amountText};
+    const { data, error } = await adminClient().rpc(
+      action === "reserve" ? "crew_budget_reserve" : "crew_budget_settle",
+      argumentsForRpc
+    );
     if (error) {
       console.warn("Budget reservation refused:", error.code);
       return respond({ error: "budget reservation denied" }, 409);
     }
-    if (!data?.accepted) return respond({ error: "budget not admitted" }, 409);
+    if (action === "reserve" && data?.accepted !== true) return respond({ error: "budget not admitted" }, 409);
+    if (action === "settle" && data?.settled !== true) return respond({ error: "settlement not accepted" }, 409);
     return respond(data);
   } catch (error) {
     // Do not leak token metadata, SQL state or privileged client internals.
