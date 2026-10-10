@@ -118,7 +118,7 @@ SQLite provides ACID only for its local transactions. GitHub pushes, LLM calls a
 - Edge code has `PAID_ADMISSION_ENABLED = false`; real model reservation and settlement endpoints return 423 until separately authorized.
 - Operational workflow in this draft branch still stops before any run. Do not merge, unlock, or use `main` for agent PRs.
 - Public staging product targets are `winter-opal:t-sand` and `quiet-spindle:t-sand`; no product production deployment.
-- The **older workflow on paper-kestrel/main is separate** and must be explicitly audited/disabled before any autonomous activation. A draft-branch gate alone cannot secure main.
+- The legacy workflow on `paper-kestrel/main` was disabled separately on 2026-10-10, commit `520e360`: automatic push trigger removed and job-level `if: false`. This changes only the public orchestration repository, never app production.
 - Provider-side retry ceiling is set to zero; CrewAI rate-limit retries cross our guarded wrapper and reserve again. Unknown usage retains reserved exposure (never credited as free).
 - Supabase security advisors report INFO `rls_enabled_no_policy` on four private `crew_budget` tables: intentional deny-by-default; service_role-only RPC access. Separate pre-existing Auth password-protection warning does not belong to CrewAI migration.
 
@@ -149,7 +149,20 @@ SQLite provides ACID only for its local transactions. GitHub pushes, LLM calls a
 
 ### Explicit exclusions / remaining risks
 1. Snapshots restore **completed** candidate patches only. An interrupted write (before a snapshot is committed) remains UNKNOWN and blocked, not automatically replayed.
-2. Provider input token accounting, actual serialized request overhead, fallback/retry tier pricing and trustworthy rate policy remain independently unverified. No paid model run is approved. [OpenAI API pricing](https://platform.openai.com/pricing) varies by model/tier/context.
+2. The pinned OpenAI transport now inspects the actual serialized HTTP request before I/O; a padded reserved input bound, one-request-per-reservation, enforced max output and provider/model/tier whitelist are checked in `wire_guard.py`. `budget_llm.py` forces a native OpenAI adapter and vetted conservative price floors. The production provider's **actual billable token accounting has not been canary-verified**, so real paid model runs are still prohibited. [Official pricing](https://platform.openai.com/pricing) may change.
 3. The GitHub Actions preview produced a manifest and artifacts, **not a real pull request**. Actual push+PR saga idempotency/authorization has not been tested.
-4. **Legacy `paper-kestrel/main` currently has an unblocked maintenance workflow** that can run on changes to `orders/current.md`; it still uses its legacy spending caps and PR base `main`. This migration does not touch or disable that main workflow. Before enabling any autonomous process, disable/isolate the old workflow through a controlled, separately authorized action. Never infer safety of main from the V2 feature-branch gate.
+4. **Legacy `paper-kestrel/main` is now blocked** (commit `520e360`, no automatic push trigger and job-level `if: false`). Draft V2 inherits the same job-level block plus its original unconditional safety gate. No change to the app's production branch.
 5. No product repo main changes, production deploy, DNS updates or real LLM provider requests performed in this preflight.
+
+## 2026-10-10 — Wire-level budget + legacy disable closure
+
+- `paper-kestrel/main` legacy Maintenance pass is now non-running: automatic `push` trigger removed, job-level `if: false`; safety commit [520e360](https://github.com/MatteoCurro/paper-kestrel/commit/520e360a075f4e32042fa23638b3c5c23a25f5a3). This is **not** the private product's main branch.
+- Registered a separate credential-free read-only PR CI workflow on public orchestrator main ([0f29dbf](https://github.com/MatteoCurro/paper-kestrel/commit/0f29dbfe61eca6eb03d865d8aa2f95c86ded9c8b)).
+- `budget_llm.py` now binds the native OpenAI Responses adapter to `wire_guard.py`, which intercepts the final JSON body at outbound HTTP transport. Each reservation permits at most one outbound request; unsupported models, endpoints, service tiers, multimodal/billed tools, streaming and unbounded output fail closed. `MODEL_PRICING_JSON` cannot undercut conservative pinned model floors.
+- See [WIRE-BUDGET-AUDIT.md](WIRE-BUDGET-AUDIT.md) for precise admitted dimensions and known limitations.
+- Reconciled feature branch with orchestrator main via a merge **into `infra/transactional-v2` only**, not into main. Draft PR #1 is mergeable but remains unmerged.
+- [Standalone public Actions run 38070045947](https://github.com/MatteoCurro/paper-kestrel/actions/runs/38070045947) completed with **78 offline tests passed** and four mocked Crew simulations.
+- [Read-only independently registered PR audit 38070182052](https://github.com/MatteoCurro/paper-kestrel/actions/runs/38070182052) completed with **78/78 offline tests passed**; no LLM key or GitHub write token.
+- [V2 TSAND integrated PR audit 38070182037](https://github.com/MatteoCurro/paper-kestrel/actions/runs/38070182037) authenticated to TSAND successfully; final staging-preview job status should be checked before calling the overall run green.
+- TSAND Edge `crew-budget` remains v9 with `PAID_ADMISSION_ENABLED=false`, checked explicitly.
+- **Remaining NO-GO**: audit real provider billable token counts with a separately authorized minimal canary, verify real PR creation and idempotent Saga to `t-sand`, ensure zero production deploy permissions or triggers.
