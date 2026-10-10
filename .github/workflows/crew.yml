@@ -18,6 +18,8 @@ concurrency:
 
 jobs:
   work:
+    # Inherited from protected public main: no paid or mutating execution.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
