@@ -97,9 +97,9 @@ class BudgetedLLM(BaseLLM):
             raise BudgetAdmissionError("Only official OpenAI models are approved")
         if len(args) > 1:
             raise BudgetAdmissionError("Unexpected positional LLM parameters")
+        super().__init__(model=str(model_name), temperature=kwargs.get("temperature"))
         self._wire_guard = OpenAIWireGuard()
         kwargs["interceptor"] = self._wire_guard
-        super().__init__(model=str(model_name), temperature=kwargs.get("temperature"))
         # CrewAI 1.15.23 routes a bare gpt-* name to its native OpenAI
         # adapter. Prefixed names may fall back to LiteLLM for newer models;
         # such a fallback could bypass the guarded HTTP transport.
