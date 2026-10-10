@@ -26,6 +26,18 @@ from .state import RunStore
 from .wire_guard import OpenAIWireGuard
 
 
+# Conservative price floors for explicitly approved text models. Standard
+# long-context maximum + 10% regional uplift; cache-write input is higher than
+# ordinary input. These floors do not authorize Fast/UltraFast service tiers.
+# Unknown models and cheaper, stale, user-supplied prices are denied.
+APPROVED_RATE_FLOORS: dict[str, ModelRate] = {
+    "openai/gpt-6.1-sol": ModelRate(Decimal("5.50"), Decimal("16.50")),
+    "openai/gpt-6-luna": ModelRate(Decimal("0.275"), Decimal("0.825")),
+    # Legacy offline-test model: deliberately far above standard rate.
+    "openai/gpt-4o-mini": ModelRate(Decimal("2.00"), Decimal("10.00")),
+}
+
+
 def configured_rates() -> dict[str, ModelRate]:
     raw = os.environ.get("MODEL_PRICING_JSON", "")
     if not raw:
@@ -34,13 +46,22 @@ def configured_rates() -> dict[str, ModelRate]:
         parsed = json.loads(raw)
         if not isinstance(parsed, dict) or not parsed:
             raise ValueError("A non-empty pricing mapping is required")
-        return {
-            str(name): ModelRate(
+        approved: dict[str, ModelRate] = {}
+        for name, row in parsed.items():
+            minimum = APPROVED_RATE_FLOORS.get(str(name))
+            if minimum is None:
+                raise BudgetAdmissionError(f"Model requires independent pricing review: {name}")
+            quoted = ModelRate(
                 Decimal(str(row["input_per_million"])),
                 Decimal(str(row["output_per_million"])),
             )
-            for name, row in parsed.items()
-        }
+            if (not quoted.input_per_million.is_finite() or
+                not quoted.output_per_million.is_finite() or
+                quoted.input_per_million < minimum.input_per_million or
+                quoted.output_per_million < minimum.output_per_million):
+                raise BudgetAdmissionError(f"Stale or underpriced model rate blocked: {name}")
+            approved[str(name)] = quoted
+        return approved
     except (ValueError, TypeError, KeyError, InvalidOperation) as exc:
         raise BudgetAdmissionError("MODEL_PRICING_JSON is invalid") from exc
 
