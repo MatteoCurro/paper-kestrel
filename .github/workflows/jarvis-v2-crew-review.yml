@@ -1,12 +1,8 @@
 name: Jarvis V2 CrewAI review — requires expense approval
 
+# Single approved Jarvis review completed. No future paid triggers.
 on:
-  push:
-    branches:
-      - infra/transactional-v2
-    paths:
-      - .github/workflows/jarvis-v2-crew-review.yml
-# Single push activation. Subsequent source changes cannot trigger another billable run.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -20,7 +16,7 @@ jobs:
   crew-review:
     # User explicitly authorized $0.15. Central Postgres enforces total cap
     # across attempts and separate workflow runs, independent from this file.
-    if: ${{ github.event_name == 'push' && github.repository == 'MatteoCurro/paper-kestrel' && github.ref == 'refs/heads/infra/transactional-v2' }}
+    if: ${{ false }} # Completed, new explicit authorization required
     runs-on: ubuntu-latest
     timeout-minutes: 9
     env:
