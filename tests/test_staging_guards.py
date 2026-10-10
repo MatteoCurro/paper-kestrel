@@ -34,7 +34,9 @@ class SafeStagingWorkflowTests(unittest.TestCase):
     def test_remote_gateway_hard_denies_paid_llm(self):
         gateway = (ROOT / "edge/crew-budget/index.ts").read_text(encoding="utf-8")
         self.assertIn('const PAID_ADMISSION_ENABLED = false',gateway)
-        self.assertIn("if (!canary && (!PAID_ADMISSION_ENABLED",gateway)
+        self.assertIn("if (!canary && !jarvisV2 && (!PAID_ADMISSION_ENABLED",gateway)
+        self.assertIn('const APPROVED_JARVIS_V2_MILESTONE = "JARVIS_V2_REVIEW_20261010"',gateway)
+        self.assertIn("jarvisV2 && !JARVIS_V2_ADMISSION_ENABLED",gateway)
         self.assertIn('CANARY_WORKFLOW = "Jarvis TSAND review canary"', gateway)
         self.assertIn('p_milestone: body.milestone', gateway)
         self.assertIn('crew_budget_reserve_jarvis_canary', gateway)
