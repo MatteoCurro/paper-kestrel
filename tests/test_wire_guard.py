@@ -34,6 +34,15 @@ class WireGuardTests(unittest.TestCase):
         finally:
             self.guard.disarm(token)
 
+    def test_one_agent_cannot_borrow_another_agents_permit(self):
+        other=OpenAIWireGuard()
+        token=self.guard.arm("openai/gpt-6-luna",9000,200)
+        try:
+            with self.assertRaises(BudgetAdmissionError):
+                other.on_outbound(self.req())
+        finally:
+            self.guard.disarm(token)
+
     def test_no_approval_blocks(self):
         with self.assertRaises(BudgetAdmissionError):
             self.guard.on_outbound(self.req())
