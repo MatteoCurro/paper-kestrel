@@ -1,12 +1,9 @@
 # Controlled retry after auditing canary-specific safety invariant (CI assertion updated).
 name: Jarvis TSAND review canary
 
+# Historical one-shot audit; disabled after successful run 38071029237.
 on:
-  push:
-    branches:
-      - infra/transactional-v2
-    paths:
-      - '.github/workflows/jarvis-tsand-review-canary.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -18,7 +15,7 @@ concurrency:
 
 jobs:
   jarvis_review:
-    if: github.repository == 'MatteoCurro/paper-kestrel' && github.ref == 'refs/heads/infra/transactional-v2'
+    if: ${{ false }} # One-shot completed; no paid reruns
     runs-on: ubuntu-latest
     timeout-minutes: 8
     env:
