@@ -20,16 +20,18 @@ _BYTES_ALLOWANCE_FOR_PROTOCOL_TOKENS = 4096
 _PROHIBITED_KEYS = ("input_image", "input_audio", "input_file", "image_url",
                     "file_id", "audio_url", "computer_use", "web_search",
                     "file_search", "code_interpreter")
-_active: ContextVar[dict[str, Any] | None] = ContextVar(
-    "paper_kestrel_outbound_permit", default=None
-)
-
-
 class OpenAIWireGuard(BaseInterceptor[httpx.Request, httpx.Response]):
+    def __init__(self):
+        # Each CrewAI agent/adapter owns an independent transport permit.
+        # A concurrent instance must never reuse another agent's reservation.
+        self._active: ContextVar[dict[str, Any] | None] = ContextVar(
+            f"paper_kestrel_wire_permit_{id(self)}", default=None
+        )
+
     def arm(self, model: str, max_input_tokens: int, max_output_tokens: int) -> Token:
         if max_input_tokens <= _BYTES_ALLOWANCE_FOR_PROTOCOL_TOKENS:
             raise BudgetAdmissionError("Input budget excludes protocol overhead")
-        return _active.set({
+        return self._active.set({
             "model": model.removeprefix("openai/"),
             "max_input": max_input_tokens,
             "max_output": max_output_tokens,
@@ -37,10 +39,10 @@ class OpenAIWireGuard(BaseInterceptor[httpx.Request, httpx.Response]):
         })
 
     def disarm(self, token: Token) -> None:
-        _active.reset(token)
+        self._active.reset(token)
 
     def on_outbound(self, request: httpx.Request) -> httpx.Request:
-        permit = _active.get()
+        permit = self._active.get()
         if permit is None:
             raise BudgetAdmissionError("No preflight reservation for outbound LLM request")
         if permit["dispatched"]:
