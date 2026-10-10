@@ -23,6 +23,7 @@ from .budget import BudgetAdmissionError, CallBound, ModelRate, reserve_before_t
 from .budget_gateway import reserve_remote, settle_remote
 from .metering import actual_cost_usd
 from .state import RunStore
+from .wire_guard import OpenAIWireGuard
 
 
 def configured_rates() -> dict[str, ModelRate]:
@@ -66,8 +67,18 @@ class BudgetedLLM(BaseLLM):
         if kwargs.get("max_retries", 0) != 0:
             raise BudgetAdmissionError("Underlying SDK retries must be disabled")
         kwargs["max_retries"] = 0
+        if kwargs.get("interceptor") is not None:
+            raise BudgetAdmissionError("Custom HTTP interceptor is not permitted")
+        if kwargs.get("api") != "responses":
+            raise BudgetAdmissionError("Only pinned OpenAI Responses transport is approved")
+        if not str(model_name).startswith("openai/"):
+            raise BudgetAdmissionError("Only official OpenAI models are approved")
+        self._wire_guard = OpenAIWireGuard()
+        kwargs["interceptor"] = self._wire_guard
         super().__init__(model=str(model_name), temperature=kwargs.get("temperature"))
         self._inner = LLM(*args, **kwargs)
+        if self._inner.interceptor is not self._wire_guard:
+            raise BudgetAdmissionError("LLM provider did not install the mandatory wire guard")
         if getattr(self._inner, "max_retries", None) != 0:
             raise BudgetAdmissionError("Pinned provider does not enforce zero SDK retries")
         object.__setattr__(self, "_max_budget_output", output_limit)
@@ -130,7 +141,9 @@ class BudgetedLLM(BaseLLM):
                 store,
                 bound=CallBound(
                     model=str(self.model),
-                    max_input_tokens=max(1, input_bytes),
+                    # Reserve a padded upper bound. The exact SDK JSON body
+                    # is checked before network I/O by OpenAIWireGuard.
+                    max_input_tokens=max(1, input_bytes + 12288),
                     max_output_tokens=self._max_budget_output,
                     max_tool_roundtrips=0,  # each actual call is admitted separately
                 ),
@@ -150,7 +163,7 @@ class BudgetedLLM(BaseLLM):
             )
         finally:
             store.db.close()
-        return reservation_id, milestone, exposure, rates[str(self.model)]
+        return reservation_id, milestone, exposure, rates[str(self.model)], max(1, input_bytes + 12288)
 
     def _snapshot(self):
         try:
@@ -159,7 +172,7 @@ class BudgetedLLM(BaseLLM):
             return None
 
     def _reconcile(self, admitted, before, after) -> None:
-        reservation_id, milestone, exposure, rate = admitted
+        reservation_id, milestone, exposure, rate, _input_bound = admitted
         cost = actual_cost_usd(
             before, after,
             input_per_million=rate.input_per_million,
@@ -183,13 +196,21 @@ class BudgetedLLM(BaseLLM):
         admitted = self._admit(args, kwargs)
         before = self._snapshot()
         # Exceptions after dispatch may still incur charges; retain exposure.
-        result = self._inner.call(*args, **kwargs)
+        token = self._wire_guard.arm(str(self.model), admitted[4], self._max_budget_output)
+        try:
+            result = self._inner.call(*args, **kwargs)
+        finally:
+            self._wire_guard.disarm(token)
         self._reconcile(admitted, before, self._snapshot())
         return result
 
     async def acall(self, *args: Any, **kwargs: Any) -> Any:
         admitted = self._admit(args, kwargs)
         before = self._snapshot()
-        result = await self._inner.acall(*args, **kwargs)
+        token = self._wire_guard.arm(str(self.model), admitted[4], self._max_budget_output)
+        try:
+            result = await self._inner.acall(*args, **kwargs)
+        finally:
+            self._wire_guard.disarm(token)
         self._reconcile(admitted, before, self._snapshot())
         return result
