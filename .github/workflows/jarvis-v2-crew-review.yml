@@ -6,8 +6,7 @@ on:
       - infra/transactional-v2
     paths:
       - .github/workflows/jarvis-v2-crew-review.yml
-      - src/paper_kestrel/jarvis_v2_review.py
-  workflow_dispatch:
+# Single push activation. Subsequent source changes cannot trigger another billable run.
 
 permissions:
   contents: read
@@ -19,9 +18,9 @@ concurrency:
 
 jobs:
   crew-review:
-    # NO-GO: approval for a fresh $0.15 paid mission is not recorded.
-    # Do not remove before validating the independent TSAND OIDC budget cap.
-    if: ${{ false }}
+    # User explicitly authorized $0.15. Central Postgres enforces total cap
+    # across attempts and separate workflow runs, independent from this file.
+    if: ${{ github.event_name == 'push' && github.repository == 'MatteoCurro/paper-kestrel' && github.ref == 'refs/heads/infra/transactional-v2' }}
     runs-on: ubuntu-latest
     timeout-minutes: 9
     env:
@@ -29,12 +28,13 @@ jobs:
       MODEL_PRICING_JSON: '{"openai/gpt-6-luna":{"input_per_million":"0.275","output_per_million":"0.825"}}'
       MAX_RUN_COST_USD: '0.15'
       HARD_RUN_COST_USD: '0.15'
-      MILESTONE_KEY: JARVIS_V2_REVIEW_PENDING_APPROVAL
+      MILESTONE_KEY: JARVIS_V2_REVIEW_20261010
       CREW_BUDGET_URL: https://xiiexzvuvzsiacbmwras.supabase.co/functions/v1/crew-budget
       CREW_BUDGET_AUDIENCE: crew-budget-supabase
       RUN_STATE_DB: ${{ github.workspace }}/output/jarvis-v2-crew.sqlite3
       RUN_STATE_ID: ${{ github.run_id }}:${{ github.run_attempt }}
-      JARVIS_INGEST_URL: ''
+      JARVIS_INGEST_URL: https://xiiexzvuvzsiacbmwras.supabase.co/functions/v1/jarvis-crew-ingest
+      JARVIS_AUDIENCE: jarvis-supabase
       GH_TOKEN: ''
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +51,8 @@ jobs:
           test "$GITHUB_REF" = "refs/heads/infra/transactional-v2"
           test "$MAX_RUN_COST_USD" = "0.15"
           test -z "$GH_TOKEN"
-          test -z "$JARVIS_INGEST_URL"
+          test "$JARVIS_INGEST_URL" = 'https://xiiexzvuvzsiacbmwras.supabase.co/functions/v1/jarvis-crew-ingest'
+          test "$MILESTONE_KEY" = 'JARVIS_V2_REVIEW_20261010'
           test -n "$OPENAI_API_KEY"
           mkdir -p output
       - name: Install tested pinned CrewAI
