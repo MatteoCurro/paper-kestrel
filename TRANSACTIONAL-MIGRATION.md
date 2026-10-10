@@ -136,3 +136,20 @@ SQLite provides ACID only for its local transactions. GitHub pushes, LLM calls a
 - [Latest follow-up CI 37879313506](https://github.com/MatteoCurro/paper-kestrel/actions/runs/37879313506): success after enhancing vanilla-JS UI-change detection.
 - Actual TSAND Postgres checkpoint for run 37879031268 is `COMPLETED`; a read-only verification found zero budget reservations from the dry-run workflows.
 - Runtime change boundaries: only draft PR on `infra/transactional-v2`, public workspace staging branches, and Supabase TSAND Edge v9. No production app deploy or product main changes.
+
+## 2026-10-10 — Phase 4 preflight without paid execution
+
+### Verified staging and candidate restoration
+- `candidate_snapshot.py` exports a content-addressed Git binary patch with source-tree, candidate-tree and SHA-256 integrity metadata. It rejects dirty workspaces, changed baselines, invalid encodings and corrupt patches; an empty candidate roundtrips without invoking `git apply`.
+- `test_candidate_snapshot.py` exercises true binary changes, additions, removals and changed baselines in **isolated ephemeral Git repositories**. GitHub CI #38069091521 passed 57 offline tests after binary fixture correction.
+- `staging_preview.py` cloned public `winter-opal:t-sand` and `quiet-spindle:t-sand` into an ephemeral GitHub runner, assembled the real project, made exactly one synthetic fixture change, restored the patch in another local checkout, and confirmed that `split.sync_back` mapped the fixture **only** to the expected public workspace. It did not push, merge, make a PR, deploy or contact a model.
+- [Read-only staging preview run #38069054669](https://github.com/MatteoCurro/paper-kestrel/actions/runs/38069054669) completed successfully, including OIDC smoke, full offline tests and staging preview. An ephemeral artifact `tsand-staging-preview` contains the candidate snapshot and proposed **draft** PR manifest; `created=false` is intentional.
+- Future production-capable operational workflow on the V2 branch still has the non-bypassable `exit 78`; its source checkout is now pinned to the workflow commit and public target clones are strictly pinned to `t-sand`.
+- `test_staging_guards.py` checks permanent no-paid/no-prod invariants in offline regression CI.
+
+### Explicit exclusions / remaining risks
+1. Snapshots restore **completed** candidate patches only. An interrupted write (before a snapshot is committed) remains UNKNOWN and blocked, not automatically replayed.
+2. Provider input token accounting, actual serialized request overhead, fallback/retry tier pricing and trustworthy rate policy remain independently unverified. No paid model run is approved. [OpenAI API pricing](https://platform.openai.com/pricing) varies by model/tier/context.
+3. The GitHub Actions preview produced a manifest and artifacts, **not a real pull request**. Actual push+PR saga idempotency/authorization has not been tested.
+4. **Legacy `paper-kestrel/main` currently has an unblocked maintenance workflow** that can run on changes to `orders/current.md`; it still uses its legacy spending caps and PR base `main`. This migration does not touch or disable that main workflow. Before enabling any autonomous process, disable/isolate the old workflow through a controlled, separately authorized action. Never infer safety of main from the V2 feature-branch gate.
+5. No product repo main changes, production deploy, DNS updates or real LLM provider requests performed in this preflight.
