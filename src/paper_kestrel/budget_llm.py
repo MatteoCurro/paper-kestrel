@@ -69,8 +69,9 @@ class BudgetedLLM(BaseLLM):
         kwargs["max_retries"] = 0
         if kwargs.get("interceptor") is not None:
             raise BudgetAdmissionError("Custom HTTP interceptor is not permitted")
-        if kwargs.get("api") != "responses":
+        if kwargs.get("api", "responses") != "responses":
             raise BudgetAdmissionError("Only pinned OpenAI Responses transport is approved")
+        kwargs["api"] = "responses"
         if not str(model_name).startswith("openai/"):
             raise BudgetAdmissionError("Only official OpenAI models are approved")
         self._wire_guard = OpenAIWireGuard()
