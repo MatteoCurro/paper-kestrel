@@ -81,6 +81,10 @@ def restore(workspace: Path, snapshot: dict[str, Any]) -> str:
         raise SnapshotConflict("Damaged binary patch encoding") from exc
     if hashlib.sha256(diff).hexdigest() != patch_sha:
         raise SnapshotConflict("Candidate patch digest mismatch")
+    if not diff:
+        if expected != source:
+            raise SnapshotConflict("Empty patch cannot produce a different candidate tree")
+        return source
     # The check is prior to filesystem mutation. Target hash is verified after.
     _git(work, "apply", "--check", "--index", "--binary", "-", input_bytes=diff)
     _git(work, "apply", "--index", "--binary", "-", input_bytes=diff)
