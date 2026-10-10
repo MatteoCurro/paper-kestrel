@@ -8,12 +8,6 @@ on:
         description: "Specification file committed under orders/"
         required: true
         default: "orders/current.md"
-  push:
-    branches:
-      - main
-    paths:
-      - "orders/current.md"
-
 permissions:
   contents: read
   id-token: write
@@ -24,6 +18,9 @@ concurrency:
 
 jobs:
   work:
+    # Safety disable: legacy workflow may not execute models or write repositories.
+    # New transactional orchestrator is still a draft in TSAND.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
