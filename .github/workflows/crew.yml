@@ -46,7 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.sha }}
           fetch-depth: 1
 
       - name: Migration safety gate (non-bypassable)
@@ -63,7 +63,8 @@ jobs:
           test -n "$OPENAI_API_KEY" || { echo "Missing OPENAI_API_KEY"; exit 2; }
           test -n "$GH_TOKEN" || { echo "Missing CREW_GITHUB_TOKEN"; exit 2; }
           test -n "$TARGET_REPO_A" || { echo "Missing TARGET_REPO_A"; exit 2; }
-          test -n "$TARGET_REPO_B" || { echo "Missing TARGET_REPO_B"; exit 2; }
+          test "$TARGET_REPO_A" = "MatteoCurro/winter-opal" || { echo "Only public winter-opal permitted"; exit 2; }
+          test "$TARGET_REPO_B" = "MatteoCurro/quiet-spindle" || { echo "Only public quiet-spindle permitted"; exit 2; }
           test "$TARGET_BASE_BRANCH" = "t-sand" || { echo "Only t-sand staging PRs allowed"; exit 2; }
           case "$JARVIS_SPEC_PATH" in
             orders/*.md) ;;
@@ -93,8 +94,10 @@ jobs:
         run: |
           set -euo pipefail
           gh auth setup-git >/dev/null 2>&1
-          gh repo clone "$TARGET_REPO_A" repo-a -- --quiet
-          gh repo clone "$TARGET_REPO_B" repo-b -- --quiet
+          gh repo clone "$TARGET_REPO_A" repo-a -- --quiet --branch "$TARGET_BASE_BRANCH" --single-branch
+          gh repo clone "$TARGET_REPO_B" repo-b -- --quiet --branch "$TARGET_BASE_BRANCH" --single-branch
+          test "$(git -C repo-a branch --show-current)" = "$TARGET_BASE_BRANCH"
+          test "$(git -C repo-b branch --show-current)" = "$TARGET_BASE_BRANCH"
           python -m paper_kestrel.split assemble --a repo-a --b repo-b --work work
           cd work
           git init -q
