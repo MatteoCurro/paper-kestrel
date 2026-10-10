@@ -18,7 +18,7 @@ const APPROVED_JARVIS_V2_REF = "MatteoCurro/paper-kestrel/.github/workflows/jarv
 const APPROVED_JARVIS_V2_MILESTONE = "JARVIS_V2_REVIEW_20261010";
 // Limited to the user's newly authorized $0.15. Private Postgres holds the
 // durable spending limit across all attempts and repeated GitHub workflow runs.
-const JARVIS_V2_ADMISSION_ENABLED = true;
+const JARVIS_V2_ADMISSION_ENABLED = false;
 const ALLOWED_REFS = new Set(["refs/heads/main", "refs/heads/infra/transactional-v2"]);
 const JWKS = createRemoteJWKSet(new URL(ISSUER + "/.well-known/jwks"));
 
