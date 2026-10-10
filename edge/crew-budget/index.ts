@@ -11,6 +11,8 @@ const PROBE_WORKFLOWS = new Set(["CrewAI budget OIDC smoke", "CrewAI offline saf
 const AUDIENCE = "crew-budget-supabase";
 // Phases 1–3 only: allow authenticated identity probes, NEVER real monetary admission.
 const PAID_ADMISSION_ENABLED = false;
+// The single approved Jarvis review completed. Disable subsequent attempts.
+const CANARY_ADMISSION_ENABLED = false;
 const ALLOWED_REFS = new Set(["refs/heads/main", "refs/heads/infra/transactional-v2"]);
 const JWKS = createRemoteJWKSet(new URL(ISSUER + "/.well-known/jwks"));
 
@@ -105,6 +107,9 @@ Deno.serve(async (request: Request) => {
     }
     if (workflow !== WORKFLOW && !canary) {
       return respond({ error: "workflow cannot reserve budget" }, 403);
+    }
+    if (canary && !CANARY_ADMISSION_ENABLED) {
+      return respond({ error: "Jarvis TSAND one-shot review closed", run_id: runId }, 423);
     }
     if (!canary && (!PAID_ADMISSION_ENABLED || branchRef !== "refs/heads/infra/transactional-v2")) {
       return respond({ error: "paid activity disabled in TSAND until Phase 4" }, 423);
