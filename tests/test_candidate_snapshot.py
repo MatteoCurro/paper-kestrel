@@ -18,7 +18,7 @@ def init(work: Path):
     git(work,"config","user.name","TSAND test")
     git(work,"config","user.email","test@example.invalid")
     (work/"index.html").write_text("<p>before</p>",encoding="utf-8")
-    (work/"binary.bin").write_bytes(b"\\x00\\x03\\xff"*100)
+    (work/"binary.bin").write_bytes(bytes([0, 3, 255])*100)
     git(work,"add","-A")
     git(work,"commit","-qm","baseline")
 
@@ -42,13 +42,13 @@ class CandidateSnapshotTests(unittest.TestCase):
 
     def test_text_binary_delete_and_new_file_restore_to_identical_git_tree(self):
         (self.first/"index.html").write_text("<p>after</p>",encoding="utf-8")
-        (self.first/"binary.bin").write_bytes(b"\\x00\\x04\\xfe"*100)
+        (self.first/"binary.bin").write_bytes(bytes([0, 4, 254])*100)
         (self.first/"new.txt").write_text("candidate")
         snapshot=capture(self.first)
         other=self.another()
         self.assertEqual(restore(other,snapshot),snapshot["candidate_tree"])
         self.assertEqual((other/"index.html").read_text(),"<p>after</p>")
-        self.assertEqual((other/"binary.bin").read_bytes(),b"\\x00\\x04\\xfe"*100)
+        self.assertEqual((other/"binary.bin").read_bytes(),bytes([0, 4, 254])*100)
         self.assertEqual((other/"new.txt").read_text(),"candidate")
 
     def test_delete_can_be_replayed(self):
