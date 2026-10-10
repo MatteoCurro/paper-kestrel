@@ -20,7 +20,7 @@ _BYTES_ALLOWANCE_FOR_PROTOCOL_TOKENS = 4096
 _PROHIBITED_KEYS = ("input_image", "input_audio", "input_file", "image_url",
                     "file_id", "audio_url", "computer_use", "web_search",
                     "file_search", "code_interpreter")
-_active: ContextVar[tuple[str, int, int] | None] = ContextVar(
+_active: ContextVar[dict[str, Any] | None] = ContextVar(
     "paper_kestrel_outbound_permit", default=None
 )
 
@@ -29,8 +29,12 @@ class OpenAIWireGuard(BaseInterceptor[httpx.Request, httpx.Response]):
     def arm(self, model: str, max_input_tokens: int, max_output_tokens: int) -> Token:
         if max_input_tokens <= _BYTES_ALLOWANCE_FOR_PROTOCOL_TOKENS:
             raise BudgetAdmissionError("Input budget excludes protocol overhead")
-        return _active.set((model.removeprefix("openai/"), max_input_tokens,
-                            max_output_tokens))
+        return _active.set({
+            "model": model.removeprefix("openai/"),
+            "max_input": max_input_tokens,
+            "max_output": max_output_tokens,
+            "dispatched": False,
+        })
 
     def disarm(self, token: Token) -> None:
         _active.reset(token)
@@ -39,7 +43,11 @@ class OpenAIWireGuard(BaseInterceptor[httpx.Request, httpx.Response]):
         permit = _active.get()
         if permit is None:
             raise BudgetAdmissionError("No preflight reservation for outbound LLM request")
-        model, reserved_input, reserved_output = permit
+        if permit["dispatched"]:
+            raise BudgetAdmissionError("Second outbound request requires a new reservation")
+        model = permit["model"]
+        reserved_input = permit["max_input"]
+        reserved_output = permit["max_output"]
         if request.url.scheme != "https" or request.url.host != "api.openai.com" or (
             request.url.path != "/v1/responses"
         ) or request.method != "POST":
@@ -72,6 +80,7 @@ class OpenAIWireGuard(BaseInterceptor[httpx.Request, httpx.Response]):
             raise BudgetAdmissionError("Unpriced or missing input content")
         if len(raw) + _BYTES_ALLOWANCE_FOR_PROTOCOL_TOKENS > reserved_input:
             raise BudgetAdmissionError("Serialized provider body exceeded reserved input bound")
+        permit["dispatched"] = True
         return request
 
     def on_inbound(self, response: httpx.Response) -> httpx.Response:
