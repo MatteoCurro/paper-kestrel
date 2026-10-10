@@ -34,7 +34,10 @@ class SafeStagingWorkflowTests(unittest.TestCase):
     def test_remote_gateway_hard_denies_paid_llm(self):
         gateway = (ROOT / "edge/crew-budget/index.ts").read_text(encoding="utf-8")
         self.assertIn('const PAID_ADMISSION_ENABLED = false',gateway)
-        self.assertIn("if (!PAID_ADMISSION_ENABLED",gateway)
+        self.assertIn("if (!canary && (!PAID_ADMISSION_ENABLED",gateway)
+        self.assertIn('CANARY_WORKFLOW = "Jarvis TSAND review canary"', gateway)
+        self.assertIn('p_milestone: body.milestone', gateway)
+        self.assertIn('crew_budget_reserve_jarvis_canary', gateway)
 
     def test_staging_preview_has_no_push_permissions_or_deployment(self):
         workflow = (ROOT / ".github/workflows/crewai-offline-audit.yml").read_text(encoding="utf-8")
