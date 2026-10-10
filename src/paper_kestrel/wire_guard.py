@@ -78,6 +78,15 @@ class OpenAIWireGuard(BaseInterceptor[httpx.Request, httpx.Response]):
             raise BudgetAdmissionError("Multimodal or separately billed built-in tool blocked")
         if not isinstance(body.get("input"), (str, list)):
             raise BudgetAdmissionError("Unpriced or missing input content")
+        # Only local function calling is included in the known text-token
+        # tariff. Web search, code interpreter, file search and other native
+        # tools have separate billing dimensions.
+        tools = body.get("tools", [])
+        if not isinstance(tools, list) or any(
+            not isinstance(tool, dict) or tool.get("type") != "function"
+            for tool in tools
+        ):
+            raise BudgetAdmissionError("Unpriced provider-managed tool denied")
         if len(raw) + _BYTES_ALLOWANCE_FOR_PROTOCOL_TOKENS > reserved_input:
             raise BudgetAdmissionError("Serialized provider body exceeded reserved input bound")
         permit["dispatched"] = True
