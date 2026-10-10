@@ -12,12 +12,14 @@ import urllib.request
 from pathlib import Path
 
 from .jarvis_review import run_role
+from .jarvis import JarvisEmitter
 from .state import RunStore
 
 JARVIS_STAGE="https://www.unlockvenice.com/t-sand/jarvis.html"
-MILESTONE="JARVIS_V2_REVIEW_PENDING_APPROVAL"
+MILESTONE="JARVIS_V2_REVIEW_20261010"
 REQUIRED_MARKERS=(
     "JARVIS_T_SAND_AUTH_V2_20261010",
+    "JARVIS_T_SAND_CHAT_V3_20261010",
     "signInWithPassword(",
     'verifyOtp({email:codeEmail,token,type:"email"})',
     'id="runFilter"',
@@ -42,6 +44,14 @@ def get_staged_source() -> str:
     # Never send public publishable tokens (or opaque OAuth query fragments)
     # to the LLM even though the publishable key is not a secret.
     return re.sub(r"sb_publishable_[A-Za-z0-9_-]+","[REDACTED_PUBLIC_KEY]",source)
+
+
+def safe_chat_excerpt(text: str) -> str:
+    # Persist *bounded actual excerpts* of role output, no generated narrative.
+    text=re.sub(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}", "[email omessa]", text, flags=re.I)
+    text=re.sub(r"(?:sb_secret_|sk-proj-|ghp_)[A-Za-z0-9_-]+","[chiave omessa]",text)
+    text=re.sub(r"(?i)(?:api[_-]?key|password|bearer)\\s*[=:]\\s*\\S+","[credenziale omessa]",text)
+    return " ".join(text.split())[:460]
 
 
 def main() -> None:
@@ -76,6 +86,22 @@ def main() -> None:
              "Known staging tests: no-network Chrome OTP/password/admin denial; "
              "mobile 390px, desktop 1280px; read-only dashboard search and filters.\n")
     reviews=[]
+    emitter=JarvisEmitter()
+    emitter.run_store=store
+    # Only short handoffs are posted to the TSAND event table; the complete
+    # multi-agent transcript lives solely in a short-retention Actions artifact.
+    def chat(seq:int, actor:str, body:str, *, target:str|None=None,
+             phase:str="planning", finished:bool=False, ok:bool=True)->None:
+        emitter.emit(
+            "run.completed" if finished and ok else ("run.failed" if finished else "agent.message"),
+            safe_chat_excerpt(body),agent=actor,
+            status=("success" if ok else "failure") if finished else "running",
+            phase="done" if finished and ok else phase,
+            event_key=f"v2chat:{seq:02d}",
+            details={"kind":"agent_chat","to":target} if target else {"kind":"agent_chat"},
+            finished=finished,
+        )
+    chat(0,"Controller","Avvio della revisione Jarvis V2. Verificheremo codice, UX, sicurezza e passaggi tra agenti.",phase="planning")
     try:
         engineer=run_role(
             "Senior Product Engineer",
@@ -86,6 +112,7 @@ def main() -> None:
             excerpt[:16000]+context,
         )
         reviews.append(("Engineering",engineer))
+        chat(1,"Senior Product Engineer",engineer,target="UX Critic")
         ux=run_role(
             "UX Critic",
             "Critique existing engineering decisions and propose better UX.",
@@ -95,6 +122,15 @@ def main() -> None:
             context+excerpt[:8500]+"\nENGINEERING HANDOFF:\n"+engineer[:3300],
         )
         reviews.append(("UX Critic",ux))
+        chat(2,"UX Critic",ux,target="Senior Product Engineer",phase="qa")
+        revision=run_role(
+            "Senior Product Engineer",
+            "Address UX Critic's actionable concerns; provide a grounded implementation proposal without making changes.",
+            "Read the UX review critically. State which points you accept, reject or amend, with concrete validation tests and an efficient TSAND-only patch sequence. Reply directly to the critic; do not deploy.",
+            "INITIAL ENGINEERING:\n"+engineer[:2400]+"\nUX CRITIQUE:\n"+ux[:3000],
+        )
+        reviews.append(("Engineering follow-up",revision))
+        chat(3,"Senior Product Engineer",revision,target="Independent Security and Release Reviewer",phase="qa")
         reviewer=run_role(
             "Independent Security and Release Reviewer",
             "Make a prudent TSAND-only go/no-go decision.",
@@ -102,9 +138,11 @@ def main() -> None:
             "resend rate limits, stale state, accessibility, GitHub OAuth provider setup "
             "and zero production deploy. Flag mistaken UX/engineering assumptions. "
             "Provide exact smallest TSAND patch and regression checks; no production approval.",
-            "ENGINEERING:\n"+engineer[:3800]+"\nUX FEEDBACK:\n"+ux[:3800],
+            "ENGINEERING:\n"+engineer[:2300]+"\nUX FEEDBACK:\n"+ux[:2200]+
+            "\nENGINEER RESPONSE TO UX:\n"+revision[:2200],
         )
         reviews.append(("Release Review",reviewer))
+        chat(4,"Independent Security and Release Reviewer",reviewer,target="Controller",phase="qa")
         (output/"jarvis-v2-crew-review.json").write_text(json.dumps({
             "mode":"CREWAI_READONLY_TSAND_REVIEW",
             "staging_url":JARVIS_STAGE,
@@ -113,7 +151,8 @@ def main() -> None:
             "roles":[{"role":name,"review":review} for name,review in reviews],
             "code_writes":0,"deployments":0,"production_touch":False,
         },ensure_ascii=False,indent=2),encoding="utf-8")
-        print("CrewAI Jarvis V2 read-only review finished, no implementation/deployment")
+        chat(5,"Controller","Revisione completata: Engineering, UX Critic, replica Engineering e Release Reviewer. Transcript completo archiviato temporaneamente su GitHub Actions.",finished=True)
+        print("CrewAI Jarvis V2: 4 authentic role turns; <= 6 bounded Jarvis chat events; no writes or deployment")
     finally:
         store.db.close()
 
