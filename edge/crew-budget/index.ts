@@ -13,6 +13,12 @@ const AUDIENCE = "crew-budget-supabase";
 const PAID_ADMISSION_ENABLED = false;
 // The single approved Jarvis review completed. Disable subsequent attempts.
 const CANARY_ADMISSION_ENABLED = false;
+const APPROVED_JARVIS_V2_WORKFLOW = "Jarvis V2 CrewAI review — requires expense approval";
+const APPROVED_JARVIS_V2_REF = "MatteoCurro/paper-kestrel/.github/workflows/jarvis-v2-crew-review.yml@refs/heads/infra/transactional-v2";
+const APPROVED_JARVIS_V2_MILESTONE = "JARVIS_V2_REVIEW_20261010";
+// Limited to the user's newly authorized $0.15. Private Postgres holds the
+// durable spending limit across all attempts and repeated GitHub workflow runs.
+const JARVIS_V2_ADMISSION_ENABLED = true;
 const ALLOWED_REFS = new Set(["refs/heads/main", "refs/heads/infra/transactional-v2"]);
 const JWKS = createRemoteJWKSet(new URL(ISSUER + "/.well-known/jwks"));
 
@@ -52,9 +58,13 @@ Deno.serve(async (request: Request) => {
     const canary = workflow === CANARY_WORKFLOW &&
       branchRef === "refs/heads/infra/transactional-v2" &&
       payload.event_name === "push";
+    const jarvisV2 = workflow === APPROVED_JARVIS_V2_WORKFLOW &&
+      payload.workflow_ref === APPROVED_JARVIS_V2_REF &&
+      branchRef === "refs/heads/infra/transactional-v2" &&
+      payload.event_name === "push";
     if (payload.repository !== REPOSITORY ||
         String(payload.repository_id) !== "1409141984" ||
-        !(workflow === WORKFLOW || PROBE_WORKFLOWS.has(workflow) || canary) ||
+        !(workflow === WORKFLOW || PROBE_WORKFLOWS.has(workflow) || canary || jarvisV2) ||
         !(trustedBranch || stagingPrProbe)) {
       return respond({ error: "unauthorized Actions identity" }, 403);
     }
@@ -105,16 +115,19 @@ Deno.serve(async (request: Request) => {
       }
       return respond(data);
     }
-    if (workflow !== WORKFLOW && !canary) {
+    if (workflow !== WORKFLOW && !canary && !jarvisV2) {
       return respond({ error: "workflow cannot reserve budget" }, 403);
+    }
+    if (jarvisV2 && !JARVIS_V2_ADMISSION_ENABLED) {
+      return respond({ error: "Approved Jarvis V2 spending window closed" }, 423);
     }
     if (canary && !CANARY_ADMISSION_ENABLED) {
       return respond({ error: "Jarvis TSAND one-shot review closed", run_id: runId }, 423);
     }
-    if (!canary && (!PAID_ADMISSION_ENABLED || branchRef !== "refs/heads/infra/transactional-v2")) {
+    if (!canary && !jarvisV2 && (!PAID_ADMISSION_ENABLED || branchRef !== "refs/heads/infra/transactional-v2")) {
       return respond({ error: "paid activity disabled in TSAND until Phase 4" }, 423);
     }
-    if (canary && (action !== "reserve" && action !== "settle")) {
+    if ((canary || jarvisV2) && (action !== "reserve" && action !== "settle")) {
       return respond({ error: "canary action refused" }, 403);
     }
     if (!["reserve", "settle"].includes(action) ||
@@ -132,9 +145,10 @@ Deno.serve(async (request: Request) => {
     }
     const amount = Number(amountText);
     if (!Number.isFinite(amount) || amount < 0 ||
-        amount > (canary ? 0.025 : 0.75) ||
+        amount > ((canary || jarvisV2) ? 0.025 : 0.75) ||
         (action === "reserve" && amount === 0) ||
-        (canary && action === "reserve" && body.milestone !== "JARVIS_CANARY_20261010")) {
+        (canary && action === "reserve" && body.milestone !== "JARVIS_CANARY_20261010") ||
+        (jarvisV2 && action === "reserve" && body.milestone !== APPROVED_JARVIS_V2_MILESTONE)) {
       return respond({ error: "invalid precise amount" }, 400);
     }
     const argumentsForRpc = action === "reserve"
@@ -142,7 +156,8 @@ Deno.serve(async (request: Request) => {
       : {p_run_id: runId, p_key: body.reservation_id, p_charged: amountText};
     const { data, error } = await adminClient().rpc(
       action === "reserve"
-        ? (canary ? "crew_budget_reserve_jarvis_canary" : "crew_budget_reserve")
+        ? (jarvisV2 ? "crew_budget_reserve_jarvis_v2" :
+           canary ? "crew_budget_reserve_jarvis_canary" : "crew_budget_reserve")
         : "crew_budget_settle",
       argumentsForRpc
     );
