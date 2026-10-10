@@ -6,6 +6,7 @@ import { createRemoteJWKSet, jwtVerify } from "npm:jose@6.1.0";
 const ISSUER = "https://token.actions.githubusercontent.com";
 const REPOSITORY = "MatteoCurro/paper-kestrel";
 const WORKFLOW = "Maintenance pass";
+const CANARY_WORKFLOW = "Jarvis TSAND review canary";
 const PROBE_WORKFLOWS = new Set(["CrewAI budget OIDC smoke", "CrewAI offline safety audit"]);
 const AUDIENCE = "crew-budget-supabase";
 // Phases 1–3 only: allow authenticated identity probes, NEVER real monetary admission.
@@ -46,9 +47,12 @@ Deno.serve(async (request: Request) => {
       payload.base_ref === "main" &&
       branchRef === "refs/pull/1/merge";
     const trustedBranch = ALLOWED_REFS.has(branchRef);
+    const canary = workflow === CANARY_WORKFLOW &&
+      branchRef === "refs/heads/infra/transactional-v2" &&
+      payload.event_name === "push";
     if (payload.repository !== REPOSITORY ||
         String(payload.repository_id) !== "1409141984" ||
-        !(workflow === WORKFLOW || PROBE_WORKFLOWS.has(workflow)) ||
+        !(workflow === WORKFLOW || PROBE_WORKFLOWS.has(workflow) || canary) ||
         !(trustedBranch || stagingPrProbe)) {
       return respond({ error: "unauthorized Actions identity" }, 403);
     }
@@ -99,11 +103,14 @@ Deno.serve(async (request: Request) => {
       }
       return respond(data);
     }
-    if (workflow !== WORKFLOW) {
+    if (workflow !== WORKFLOW && !canary) {
       return respond({ error: "workflow cannot reserve budget" }, 403);
     }
-    if (!PAID_ADMISSION_ENABLED || branchRef !== "refs/heads/infra/transactional-v2") {
+    if (!canary && (!PAID_ADMISSION_ENABLED || branchRef !== "refs/heads/infra/transactional-v2")) {
       return respond({ error: "paid activity disabled in TSAND until Phase 4" }, 423);
+    }
+    if (canary && (action !== "reserve" && action !== "settle")) {
+      return respond({ error: "canary action refused" }, 403);
     }
     if (!["reserve", "settle"].includes(action) ||
         !validIdentifier(body?.reservation_id) ||
@@ -119,15 +126,19 @@ Deno.serve(async (request: Request) => {
       return respond({ error: "amount must have exactly 6 decimal places" }, 400);
     }
     const amount = Number(amountText);
-    if (!Number.isFinite(amount) || amount < 0 || amount > .75 ||
-        (action === "reserve" && amount === 0)) {
+    if (!Number.isFinite(amount) || amount < 0 ||
+        amount > (canary ? 0.025 : 0.75) ||
+        (action === "reserve" && amount === 0) ||
+        (canary && action === "reserve" && body.milestone !== "JARVIS_CANARY_20261010")) {
       return respond({ error: "invalid precise amount" }, 400);
     }
     const argumentsForRpc = action === "reserve"
       ? {p_run_id: runId, p_milestone: body.milestone, p_key: body.reservation_id, p_amount: amountText}
       : {p_run_id: runId, p_key: body.reservation_id, p_charged: amountText};
     const { data, error } = await adminClient().rpc(
-      action === "reserve" ? "crew_budget_reserve" : "crew_budget_settle",
+      action === "reserve"
+        ? (canary ? "crew_budget_reserve_jarvis_canary" : "crew_budget_reserve")
+        : "crew_budget_settle",
       argumentsForRpc
     );
     if (error) {
