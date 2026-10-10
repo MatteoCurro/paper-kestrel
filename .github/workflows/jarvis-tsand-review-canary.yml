@@ -1,3 +1,4 @@
+# Controlled retry after auditing canary-specific safety invariant (CI assertion updated).
 name: Jarvis TSAND review canary
 
 on:
