@@ -42,6 +42,45 @@ class GuardedLLMTests(unittest.TestCase):
         self.assertIsInstance(llm, BaseLLM)
         return llm
 
+    def test_actual_provider_is_native_openai_with_wire_guard(self):
+        llm = self.llm()
+        self.assertEqual(type(llm._inner).__name__, "OpenAICompletion")
+        self.assertIs(llm._inner.interceptor, llm._wire_guard)
+        self.assertEqual(llm._inner.api, "responses")
+
+    def test_transport_gate_sees_sdk_wire_request_before_mock_network(self):
+        import httpx
+        llm = self.llm()
+        def fake_adapter(_self, *args, **kwargs):
+            raw = httpx.Request(
+                "POST","https://api.openai.com/v1/responses",
+                json={"model":"gpt-4o-mini","input":"hello","max_output_tokens":1024},
+            )
+            llm._wire_guard.on_outbound(raw)
+            return "ok"
+        with patch("paper_kestrel.budget_llm.reserve_remote"):
+            with patch.object(type(llm._inner), "call", fake_adapter):
+                self.assertEqual(llm.call("hello"), "ok")
+
+    def test_secondary_provider_dispatch_is_denied_after_first(self):
+        import httpx
+        llm = self.llm()
+        def bad_adapter(_self,*args,**kwargs):
+            def request():
+                return httpx.Request(
+                    "POST","https://api.openai.com/v1/responses",
+                    json={"model":"gpt-4o-mini","input":"hello","max_output_tokens":1024},
+                )
+            llm._wire_guard.on_outbound(request())
+            llm._wire_guard.on_outbound(request())
+        with patch("paper_kestrel.budget_llm.reserve_remote"):
+            with patch.object(type(llm._inner), "call", bad_adapter):
+                with self.assertRaises(BudgetAdmissionError):
+                    llm.call("hello")
+        self.assertEqual(self.store.db.execute(
+            "SELECT COUNT(*) FROM reservations"
+        ).fetchone()[0],1)
+
     def test_native_sdk_retries_are_disabled(self):
         self.assertEqual(self.llm()._inner.max_retries, 0)
         with self.assertRaises(BudgetAdmissionError):
