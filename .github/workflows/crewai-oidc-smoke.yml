@@ -1,0 +1,51 @@
+name: CrewAI budget OIDC smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - infra/transactional-v2
+    paths:
+      - 'edge/crew-budget/**'
+      - '.github/workflows/crewai-oidc-smoke.yml'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  handshake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify GitHub OIDC identity at TSAND budget gateway (no charges)
+        env:
+          CREW_BUDGET_URL: https://xiiexzvuvzsiacbmwras.supabase.co/functions/v1/crew-budget
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          audience = 'crew-budget-supabase'
+          endpoint = os.environ['ACTIONS_ID_TOKEN_REQUEST_URL']
+          access = os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']
+          url = endpoint + ('&' if '?' in endpoint else '?') + urllib.parse.urlencode({'audience': audience})
+          oidc = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + access})
+          with urllib.request.urlopen(oidc, timeout=10) as response:
+              jwt = json.loads(response.read())['value']
+
+          api_request = urllib.request.Request(
+              os.environ['CREW_BUDGET_URL'],
+              method='POST',
+              data=b'{"action":"probe"}',
+              headers={'Authorization': 'Bearer ' + jwt, 'Content-Type': 'application/json'},
+          )
+          with urllib.request.urlopen(api_request, timeout=15) as response:
+              result = json.loads(response.read())
+          assert result.get('authorized') is True and result.get('ok') is True, 'budget identity verification failed'
+          assert result.get('repository') == 'MatteoCurro/paper-kestrel'
+          assert result.get('branch') == 'refs/heads/infra/transactional-v2'
+          print('GitHub OIDC -> Supabase budget gateway: authenticated, 0 model requests, 0 reservations')
+          PY

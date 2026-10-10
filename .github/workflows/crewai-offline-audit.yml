@@ -1,0 +1,156 @@
+name: CrewAI offline safety audit
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - infra/transactional-v2
+    paths:
+      - 'src/paper_kestrel/**'
+      - 'tests/**'
+      - 'edge/crew-budget/**'
+      - '.github/workflows/crewai-offline-audit.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Syntax check
+        run: python -m compileall -q src/paper_kestrel tests
+      - name: Install orchestrator for offline tests
+        run: python -m pip install --disable-pip-version-check -e .
+      - name: Run regression suite without model keys
+        env:
+          OPENAI_API_KEY: ''
+          JARVIS_INGEST_URL: ''
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Rehearse end-to-end CrewAI transaction (four no-spend scenarios)
+        env:
+          OPENAI_API_KEY: ''
+          JARVIS_INGEST_URL: ''
+        run: |
+          mkdir -p output
+          for scenario in ux_revision approved crash review_block; do
+            python -m paper_kestrel.simulation --scenario "$scenario" | tee -a output/tsand-dryrun.jsonl
+          done
+      - name: Preserve dry-run evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: tsand-rehearsal
+          path: output/tsand-dryrun.jsonl
+          if-no-files-found: error
+          retention-days: 14
+
+  staging_preview:
+    if: github.event_name == 'pull_request' && github.event.pull_request.number == 1 && github.event.pull_request.head.repo.full_name == 'MatteoCurro/paper-kestrel'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deterministic orchestrator tools
+        run: python -m pip install --disable-pip-version-check -e .
+      - name: Clone ONLY public TSAND branches, read-only
+        run: |
+          set -euo pipefail
+          git clone --quiet --depth 1 --branch t-sand --single-branch https://github.com/MatteoCurro/winter-opal.git /tmp/crew-tsand-a
+          git clone --quiet --depth 1 --branch t-sand --single-branch https://github.com/MatteoCurro/quiet-spindle.git /tmp/crew-tsand-b
+      - name: Rehearse binary snapshot and draft PR against TSAND without pushes
+        env:
+          OPENAI_API_KEY: ''
+          GH_TOKEN: ''
+        run: |
+          python -m paper_kestrel.staging_preview --a /tmp/crew-tsand-a --b /tmp/crew-tsand-b --output output/staging-preview
+      - name: Preserve non-sensitive preview evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: tsand-staging-preview
+          path: output/staging-preview/
+          if-no-files-found: error
+          retention-days: 7
+
+  oidc_tsand:
+    if: github.event_name == 'pull_request' && github.event.pull_request.number == 1 && github.event.pull_request.head.repo.full_name == 'MatteoCurro/paper-kestrel' && github.head_ref == 'infra/transactional-v2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Authenticate to TSAND budget gateway (probe only, no LLM)
+        env:
+          BUDGET_TSAND_URL: https://xiiexzvuvzsiacbmwras.supabase.co/functions/v1/crew-budget
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          endpoint = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+          secret = os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
+          sep = "&" if "?" in endpoint else "?"
+          token_url = endpoint + sep + urllib.parse.urlencode({"audience": "crew-budget-supabase"})
+          request = urllib.request.Request(token_url, headers={"Authorization": "Bearer " + secret})
+          with urllib.request.urlopen(request, timeout=10) as response:
+              token = json.loads(response.read().decode())["value"]
+          probe = urllib.request.Request(
+              os.environ["BUDGET_TSAND_URL"],
+              data=b'{"action":"probe"}',
+              method="POST",
+              headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+          )
+          with urllib.request.urlopen(probe, timeout=15) as response:
+              result = json.loads(response.read().decode())
+          assert result.get("ok") is True and result.get("authorized") is True
+          assert result.get("repository") == "MatteoCurro/paper-kestrel"
+          assert result.get("branch") == "refs/pull/1/merge"
+          print("TSAND OIDC handshake authenticated. No model calls and no budget reservation.")
+          import hashlib
+          def checkpoint_request(action, result=None):
+              body = {
+                  "action": action,
+                  "step": "smoke:" + os.environ["GITHUB_RUN_ID"],
+                  "input_sha": hashlib.sha256(b"cross-run-tsand-smoke").hexdigest(),
+                  "candidate_sha": None,
+              }
+              if result is not None:
+                  body["result"] = result
+              call = urllib.request.Request(
+                  os.environ["BUDGET_TSAND_URL"],
+                  data=json.dumps(body).encode(),
+                  method="POST",
+                  headers={"Authorization": "Bearer " + token,
+                           "Content-Type": "application/json"},
+              )
+              with urllib.request.urlopen(call,timeout=15) as response:
+                  return json.loads(response.read().decode())
+          claimed = checkpoint_request("checkpoint_claim")
+          if not claimed.get("cached"):
+              committed = checkpoint_request("checkpoint_complete", {"result": "approved"})
+              assert committed.get("accepted") is True
+          replay = checkpoint_request("checkpoint_claim")
+          assert replay.get("cached") is True
+          assert replay.get("result") == {"result": "approved"}
+          print("TSAND central checkpoint claim/commit/replay verified; 0 LLM calls")
+
+          PY

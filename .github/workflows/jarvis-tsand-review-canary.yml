@@ -1,0 +1,70 @@
+# Controlled retry after auditing canary-specific safety invariant (CI assertion updated).
+name: Jarvis TSAND review canary
+
+# Historical one-shot audit; disabled after successful run 38071029237.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: jarvis-tsand-15-cent-canary
+  cancel-in-progress: false
+
+jobs:
+  jarvis_review:
+    if: ${{ false }} # One-shot completed; no paid reruns
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      MODEL_PRICING_JSON: '{"openai/gpt-6-luna":{"input_per_million":"0.275","output_per_million":"0.825"}}'
+      CREW_BUDGET_URL: https://xiiexzvuvzsiacbmwras.supabase.co/functions/v1/crew-budget
+      CREW_BUDGET_AUDIENCE: crew-budget-supabase
+      RUN_STATE_DB: ${{ github.workspace }}/output/jarvis-canary-ledger.sqlite3
+      RUN_STATE_ID: ${{ github.run_id }}:${{ github.run_attempt }}
+      MAX_RUN_COST_USD: '0.15'
+      HARD_RUN_COST_USD: '0.15'
+      MILESTONE_KEY: JARVIS_CANARY_20261010
+      JARVIS_INGEST_URL: ''
+      GH_TOKEN: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Ensure this is an explicitly limited read-only canary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = "MatteoCurro/paper-kestrel"
+          test "${GITHUB_REF}" = "refs/heads/infra/transactional-v2"
+          test "${MAX_RUN_COST_USD}" = "0.15"
+          test "${HARD_RUN_COST_USD}" = "0.15"
+          test -z "$GH_TOKEN"
+          test -z "$JARVIS_INGEST_URL"
+          test -n "$OPENAI_API_KEY" || { echo "No API key configured; zero paid requests"; exit 3; }
+          mkdir -p output
+      - name: Install pinned CrewAI and run offline regression tests
+        shell: bash
+        env:
+          OPENAI_API_KEY: ''
+        run: |
+          python -m pip install --disable-pip-version-check -e .
+          python -m unittest discover -s tests -p 'test_*.py' -q
+      - name: Run read-only Jarvis multi-agent review with pre-call authorization
+        run: python -m paper_kestrel.jarvis_review
+      - name: Upload report and local billing ledger (admin-only artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-tsand-canary-review
+          path: |
+            output/jarvis-review*.json
+            output/jarvis-canary-ledger.sqlite3
+          if-no-files-found: warn
+          retention-days: 14
