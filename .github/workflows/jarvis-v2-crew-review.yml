@@ -1,0 +1,70 @@
+name: Jarvis V2 CrewAI review — requires expense approval
+
+on:
+  push:
+    branches:
+      - infra/transactional-v2
+    paths:
+      - .github/workflows/jarvis-v2-crew-review.yml
+      - src/paper_kestrel/jarvis_v2_review.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: jarvis-v2-crew-budget
+  cancel-in-progress: false
+
+jobs:
+  crew-review:
+    # NO-GO: approval for a fresh $0.15 paid mission is not recorded.
+    # Do not remove before validating the independent TSAND OIDC budget cap.
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      MODEL_PRICING_JSON: '{"openai/gpt-6-luna":{"input_per_million":"0.275","output_per_million":"0.825"}}'
+      MAX_RUN_COST_USD: '0.15'
+      HARD_RUN_COST_USD: '0.15'
+      MILESTONE_KEY: JARVIS_V2_REVIEW_PENDING_APPROVAL
+      CREW_BUDGET_URL: https://xiiexzvuvzsiacbmwras.supabase.co/functions/v1/crew-budget
+      CREW_BUDGET_AUDIENCE: crew-budget-supabase
+      RUN_STATE_DB: ${{ github.workspace }}/output/jarvis-v2-crew.sqlite3
+      RUN_STATE_ID: ${{ github.run_id }}:${{ github.run_attempt }}
+      JARVIS_INGEST_URL: ''
+      GH_TOKEN: ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate zero repository write and 15 cent TSAND maximum
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "MatteoCurro/paper-kestrel"
+          test "$GITHUB_REF" = "refs/heads/infra/transactional-v2"
+          test "$MAX_RUN_COST_USD" = "0.15"
+          test -z "$GH_TOKEN"
+          test -z "$JARVIS_INGEST_URL"
+          test -n "$OPENAI_API_KEY"
+          mkdir -p output
+      - name: Install tested pinned CrewAI
+        run: |
+          python -m pip install --disable-pip-version-check -e .
+          python -m compileall -q src/paper_kestrel
+      - name: Review current Jarvis TSAND implementation (read-only)
+        run: python -m paper_kestrel.jarvis_v2_review
+      - name: Archive non-sensitive findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-v2-crew-review
+          path: output/jarvis-v2-crew-review.json
+          if-no-files-found: warn
+          retention-days: 7
