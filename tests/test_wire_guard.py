@@ -19,6 +19,21 @@ class WireGuardTests(unittest.TestCase):
         finally:
             self.guard.disarm(token)
 
+    def test_local_function_tools_are_token_priced(self):
+        payload={
+            **self.base,
+            "tools":[{
+                "type":"function","name":"inspect_file",
+                "description":"Return lines",
+                "parameters":{"type":"object","properties":{"path":{"type":"string"}}},
+            }],
+        }
+        token=self.guard.arm("openai/gpt-6-luna",9000,200)
+        try:
+            self.assertIsInstance(self.guard.on_outbound(self.req(payload)),httpx.Request)
+        finally:
+            self.guard.disarm(token)
+
     def test_no_approval_blocks(self):
         with self.assertRaises(BudgetAdmissionError):
             self.guard.on_outbound(self.req())
